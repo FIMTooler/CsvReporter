@@ -256,10 +256,10 @@ try {
                 if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file (row $prevRowIndex)." }
                 # 3. Consistent Row Length Check
                 $actualColumns = @($_.PSObject.Properties).Count
-                if ($actualColumns -ne $previousHeadersRaw.Count) { throw "Row with anchor '$anchor' in Previous file has $actualColumns columns, expected $($previousHeadersRaw.Count)." }
+                if ($actualColumns -ne $previousHeadersRaw.Count) { throw "Row $prevRowIndex with anchor '$anchor' in Previous file has $actualColumns columns, expected $($previousHeadersRaw.Count)." }
                 # 4. Blank or Malformed Row Check
                 $nonEmpty = $_.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
-                if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file with anchor '$anchor'." }
+                if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file at row $prevRowIndex with anchor '$anchor'." }
                 $prevTotal++
                 $_
             } |
@@ -281,10 +281,10 @@ try {
                 if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file (row $currRowIndex)." }
                 # 3. Consistent Row Length Check
                 $actualColumns = @($_.PSObject.Properties).Count
-                if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
+                if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row $currRowIndex with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
                 # 4. Blank or Malformed Row Check
                 $nonEmpty = $_.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
-                if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Current file with anchor '$anchor'." }
+                if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Current file at row $currRowIndex with anchor '$anchor'." }
                 $currTotal++
                 $_
             } |

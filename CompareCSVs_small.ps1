@@ -219,38 +219,42 @@ try {
 
 
     $anchorSetPrev = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
+    $rowNum = 0
     foreach ($row in $Previous) {
+        $rowNum++
         $anchor = $row.$prevAnchorRaw
         # 1. Anchor Value Validation
-        if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Previous record: $($row)." }
+        if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Previous record at row $($rowNum): $($row)." }
 
         # 2. Duplicate Anchor Value Check
-        if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file." }
+        if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file at row $rowNum." }
 
         # 3. Consistent Row Length Check
         $actualColumns = @($row.PSObject.Properties).Count
-        if ($actualColumns -ne $previousHeadersRaw.Count) { throw "Row with anchor '$anchor' in Previous file has $actualColumns columns, expected $($previousHeadersRaw.Count)." }
+        if ($actualColumns -ne $previousHeadersRaw.Count) { throw "Row $rowNum with anchor '$anchor' in Previous file has $actualColumns columns, expected $($previousHeadersRaw.Count)." }
 
         # 4. Blank or Malformed Row Check
         $nonEmpty = $row.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
-        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file with anchor '$anchor'." }
+        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file  at row $rowNumwith anchor '$anchor'." }
     }
     $anchorSetCurr = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
+    $rowNum = 0
     foreach ($row in $Current) {
+        $rowNum++
         $anchor = $row.$currAnchorRaw
         # 1. Anchor Value Validation
-        if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Current record: $($row)." }
+        if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Current record at row $($rowNum): $($row)." }
 
         # 2. Duplicate Anchor Value Check
-        if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file." }
+        if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file at row $rowNum." }
 
         # 3. Consistent Row Length Check
         $actualColumns = @($row.PSObject.Properties).Count
-        if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
+        if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row $rowNum with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
 
         # 4. Blank or Malformed Row Check
         $nonEmpty = $row.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
-        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Current file with anchor '$anchor'." }
+        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Current file at row $rowNum with anchor '$anchor'." }
     }
 
     # 5. Count Check (after validation)
@@ -370,7 +374,7 @@ try {
                 $changes.Add([PSCustomObject]$changeObject)
             }
             if (($iCurr % 1000) -eq 0 -or $iCurr -eq $totalCurr) {
-                $pct = 50 + [int](($iCurr/$totalCurr)*50)
+                $pct = [Math]::Min(100, 50 + [int](($iCurr/$totalCurr)*50))
                 Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Phase 2/2: Scanning Current for Additions ($iCurr of $totalCurr)" -PercentComplete $pct
             }
         }
