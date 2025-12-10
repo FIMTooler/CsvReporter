@@ -265,7 +265,7 @@ try {
         $previousHeadersNorm = @($previousHeadersNorm | Where-Object { $_ -notin $normalizedIgnoreColumns })
         $currentHeadersNorm = @($currentHeadersNorm | Where-Object { $_ -notin $normalizedIgnoreColumns })
         # Validate that at least one column remains after filtering
-        if ($previousHeadersNorm.Count -eq 0 or $currentHeadersNorm.Count -eq 0) {
+        if ($previousHeadersNorm.Count -eq 0 -or $currentHeadersNorm.Count -eq 0) {
             throw "No columns remain after applying -IgnoreColumns filter. Anchor column cannot be the only remaining column."
         }
     }
@@ -718,4 +718,5 @@ try {
 catch {
     Write-Error $_
     exit 1
+
 }
