@@ -1,4 +1,4 @@
-<# 
+<#
 .SYNOPSIS
 Streams and compares two CSV files, writing a batched changes report.
 
@@ -6,6 +6,7 @@ Streams and compares two CSV files, writing a batched changes report.
 Streaming comparison suited for mid/large CSVs:
 - Robust header parsing and strict anchor validation.
 - Builds a lookup of “Previous”, then streams “Current”.
+- Detects and warns about duplicate anchor values (uses first occurrence only).
 - Batches output to reduce memory (see -BatchSize).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
 - Prints a one-line summary with counts and writes a CSV of changes.
@@ -46,6 +47,8 @@ None. Writes a changes CSV to -OutputFolder and summary messages to the console.
 
 .NOTES
 Requires Microsoft.VisualBasic for TextFieldParser header parsing.
+Duplicate anchor detection: When duplicates are found, the script warns with yellow text
+showing the anchor value and row numbers, then processes only the first occurrence.
 #>
 [CmdletBinding()]
 Param(
@@ -70,6 +73,8 @@ Param(
     [switch]$CaseSensitive
 )
 try {
+    $scriptStartTime = Get-Date
+
     # Resolve delimiter from name
     switch ($DelimiterName) {
         'comma'     { $Delimiter = ',' }
@@ -221,6 +226,7 @@ try {
     $currAnchorRaw = $currHeaderMap[$anchorNorm]
     if (-not $prevAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Previous CSV headers: $($previousHeadersRaw -join ', ')" }
     if (-not $currAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Current CSV headers: $($currentHeadersRaw -join ', ')" }
+    Write-Host "Note: Output columns use trimmed and lowercase-normalized header names for consistency."
 
     # Begin processing files
     $anchorSetPrev = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
@@ -228,8 +234,9 @@ try {
     $progressId = 1
 
     try {
-        Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Loading Previous..." 
+        Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Loading Previous..."
         $prevRowIndex = 0
+        $duplicateAnchorsPrev = @{}
         Resolve-ImportCsv -LiteralPath $PreviousCSVFile -Delimiter $Delimiter -EncodingName $EncodingName | ForEach-Object {
             $prevRowIndex++
             $anchor = $_.$prevAnchorRaw
@@ -237,7 +244,12 @@ try {
             if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Previous record (row $prevRowIndex): $($_)" }
 
             # 2. Duplicate Anchor Value Check
-            if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file (row $prevRowIndex)." }
+            if (-not $anchorSetPrev.Add($anchor)) {
+                if (-not $duplicateAnchorsPrev.ContainsKey($anchor)) { $duplicateAnchorsPrev[$anchor] = @() }
+                $duplicateAnchorsPrev[$anchor] += $prevRowIndex
+            } else {
+                $duplicateAnchorsPrev[$anchor] = @($prevRowIndex)
+            }
 
             # 3. Consistent Row Length Check
             $actualColumns = @($_.PSObject.Properties).Count
@@ -267,11 +279,12 @@ try {
             $reportColumns.Add("new $($prop)")
         }
         # Summary counters
-        $adds = 0; $updates = 0; $deletes = 0
+        $adds = 0; $updates = 0; $deletes = 0; $nones = 0;
 
         $anchorSetCurr = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
         $changeBuffer = [System.Collections.Generic.List[object]]::new($BatchSize)
         $currentRowCount = 0
+        $duplicateAnchorsCurr = @{}
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Streaming Current..."
         Resolve-ImportCsv -LiteralPath $CurrentCSVFile -Delimiter $Delimiter -EncodingName $EncodingName | ForEach-Object {
             $currentRowCount++
@@ -280,7 +293,13 @@ try {
             if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Current record (row $currentRowCount): $($_)" }
 
             # 2. Duplicate Anchor Value Check
-            if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file (row $currentRowCount)." }
+            if (-not $anchorSetCurr.Add($anchor)) {
+                if (-not $duplicateAnchorsCurr.ContainsKey($anchor)) { $duplicateAnchorsCurr[$anchor] = @() }
+                $duplicateAnchorsCurr[$anchor] += $currentRowCount
+            } else {
+                $duplicateAnchorsCurr[$anchor] = @($currentRowCount)
+            }
+
             # 3. Consistent Row Length Check
             $actualColumns = @($_.PSObject.Properties).Count
             if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row $currentRowCount with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
@@ -320,6 +339,7 @@ try {
                     }
                 }
                 if ($changeObject["ChangeType"] -eq "Update") { $updates++ }
+                else { $nones++ }
                 [void]$previousLookup.Remove($key) # Mark as matched
             }
             else
@@ -345,6 +365,16 @@ try {
             }
         }
         if ($currentRowCount -eq 0) { throw "No records found in Current CSV file." }
+
+        foreach ($anchor in $duplicateAnchorsPrev.Keys | Where-Object { $duplicateAnchorsPrev[$_].Count -gt 1 }) {
+            $rows = $duplicateAnchorsPrev[$anchor] -join ', '
+            Write-Host "WARNING: Duplicate anchor '$anchor' found in Previous file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
+        }
+
+        foreach ($anchor in $duplicateAnchorsCurr.Keys | Where-Object { $duplicateAnchorsCurr[$_].Count -gt 1 }) {
+            $rows = $duplicateAnchorsCurr[$anchor] -join ', '
+            Write-Host "WARNING: Duplicate anchor '$anchor' found in Current file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
+        }
 
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Finalizing deletions..."
         $toDeleteTotal = $previousLookup.Count
@@ -376,13 +406,20 @@ try {
                 Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Finalizing deletions... ($iDel of $toDeleteTotal)" -PercentComplete $pct
             }
         }
-        if ($changeBuffer.Count -gt 0) {
+        if (($adds + $updates + $deletes) -gt 0) {
             $changeBuffer | Select-Object -Property $reportColumns |
                 Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
+
+            # Read back, sort by anchor, and re-export
+            Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Sorting changes by anchor..."
+            $sortedChanges = Resolve-ImportCsv -LiteralPath $changesCSVFile -Delimiter $Delimiter -EncodingName $EncodingName |
+                Sort-Object { $_.$AnchorColumn } -CaseSensitive:$CaseSensitive
+            $sortedChanges | Select-Object -Property $reportColumns |
+                Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -ErrorAction Stop
+            Write-Host "Changes CSV written to: $changesCSVFile"
         }
-        # No changes notice
-        if (($adds + $updates + $deletes) -eq 0) {
-            Write-Host "No changes detected"
+        else {
+            Write-Host "No changes detected; no CSV written"
         }
     }
     finally {
@@ -390,7 +427,11 @@ try {
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Completed
     }
     # Summary output
-    Write-Host "Summary: Adds=$adds, Updates=$updates, Deletes=$deletes"
+    Write-Host "Summary: Adds=$adds, Updates=$updates, Deletes=$deletes, Unchanged=$nones"
+
+    $elapsed = (Get-Date) - $scriptStartTime
+    $elapsedStr = "{0}m {1}s" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
+    Write-Host "Elapsed: $elapsedStr"
 }
 catch {
     Write-Error $_
