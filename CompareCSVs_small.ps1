@@ -1,4 +1,4 @@
-﻿<# 
+<#
 .SYNOPSIS
 Compares two CSV files and writes a changes report (Adds, Updates, Deletes).
 
@@ -6,6 +6,7 @@ Compares two CSV files and writes a changes report (Adds, Updates, Deletes).
 In-memory comparison:
 - Robust header parsing (quoted headers, embedded delimiters).
 - Strict anchor presence; fails if the anchor column is missing.
+- Detects and warns about duplicate anchor values (uses first occurrence only).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
 - Outputs a CSV with ChangeType and old/new values for changed columns.
 - Prints a one-line summary with counts.
@@ -38,11 +39,13 @@ None. You cannot pipe objects to this script.
 None. Writes a changes CSV to -OutputFolder and summary messages to the console.
 
 .EXAMPLE
-.\CompareCSVs_advanced.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
+.\CompareCSVs_small.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
   -AnchorColumn EmployeeID -OutputFolder .\out -DelimiterName comma -EncodingName utf8BOM -CaseSensitive
 
 .NOTES
 Requires Microsoft.VisualBasic for TextFieldParser header parsing.
+Duplicate anchor detection: When duplicates are found, the script warns with yellow text
+showing the anchor value and row numbers, then processes only the first occurrence.
 #>
 [CmdletBinding()]
 Param(
@@ -65,6 +68,8 @@ Param(
     [switch]$CaseSensitive
 )
 try {
+    $scriptStartTime = Get-Date
+
     # Resolve delimiter from name
     $Delimiter = switch ($DelimiterName) {
         'comma'     { ',' }
@@ -186,7 +191,7 @@ try {
         }
         throw "Duplicate column names after normalization in Current CSV: $($details -join '; ')"
     }
-    
+
     # Normalized header sets (sorted) for cross-file comparison
     $previousHeadersNorm = $prevNormAll | Sort-Object -ErrorAction Stop
     $currentHeadersNorm  = $currNormAll | Sort-Object -ErrorAction Stop
@@ -212,13 +217,14 @@ try {
     $currAnchorRaw = $currHeaderMap[$anchorNorm]
     if (-not $prevAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Previous CSV headers: $($previousHeadersRaw -join ', ')" }
     if (-not $currAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Current CSV headers: $($currentHeadersRaw -join ', ')" }
+    Write-Host "Note: Output columns use trimmed and lowercase-normalized header names for consistency."
 
     # 2. Import Records
     $Previous = @(Resolve-ImportCsv -LiteralPath $PreviousCSVFile -Delimiter $Delimiter -EncodingName $EncodingName)
     $Current  = @(Resolve-ImportCsv -LiteralPath $CurrentCSVFile  -Delimiter $Delimiter -EncodingName $EncodingName)
 
-
     $anchorSetPrev = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
+    $duplicateAnchorsPrev = @{}
     $rowNum = 0
     foreach ($row in $Previous) {
         $rowNum++
@@ -227,7 +233,12 @@ try {
         if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Previous record at row $($rowNum): $($row)." }
 
         # 2. Duplicate Anchor Value Check
-        if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file at row $rowNum." }
+        if (-not $anchorSetPrev.Add($anchor)) {
+            if (-not $duplicateAnchorsPrev.ContainsKey($anchor)) { $duplicateAnchorsPrev[$anchor] = @() }
+            $duplicateAnchorsPrev[$anchor] += $rowNum
+        } else {
+            $duplicateAnchorsPrev[$anchor] = @($rowNum)
+        }
 
         # 3. Consistent Row Length Check
         $actualColumns = @($row.PSObject.Properties).Count
@@ -235,9 +246,10 @@ try {
 
         # 4. Blank or Malformed Row Check
         $nonEmpty = $row.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
-        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file  at row $rowNumwith anchor '$anchor'." }
+        if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Previous file at row $rowNum with anchor '$anchor'." }
     }
     $anchorSetCurr = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
+    $duplicateAnchorsCurr = @{}
     $rowNum = 0
     foreach ($row in $Current) {
         $rowNum++
@@ -246,7 +258,12 @@ try {
         if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Current record at row $($rowNum): $($row)." }
 
         # 2. Duplicate Anchor Value Check
-        if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file at row $rowNum." }
+        if (-not $anchorSetCurr.Add($anchor)) {
+            if (-not $duplicateAnchorsCurr.ContainsKey($anchor)) { $duplicateAnchorsCurr[$anchor] = @() }
+            $duplicateAnchorsCurr[$anchor] += $rowNum
+        } else {
+            $duplicateAnchorsCurr[$anchor] = @($rowNum)
+        }
 
         # 3. Consistent Row Length Check
         $actualColumns = @($row.PSObject.Properties).Count
@@ -255,6 +272,16 @@ try {
         # 4. Blank or Malformed Row Check
         $nonEmpty = $row.PSObject.Properties | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
         if ($nonEmpty.Count -eq 0) { throw "Blank or malformed row found in Current file at row $rowNum with anchor '$anchor'." }
+    }
+
+    # Warn about duplicates but continue processing
+    foreach ($anchor in $duplicateAnchorsPrev.Keys | Where-Object { $duplicateAnchorsPrev[$_].Count -gt 1 }) {
+        $rows = $duplicateAnchorsPrev[$anchor] -join ', '
+        Write-Host "WARNING: Duplicate anchor '$anchor' found in Previous file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
+    }
+    foreach ($anchor in $duplicateAnchorsCurr.Keys | Where-Object { $duplicateAnchorsCurr[$_].Count -gt 1 }) {
+        $rows = $duplicateAnchorsCurr[$anchor] -join ', '
+        Write-Host "WARNING: Duplicate anchor '$anchor' found in Current file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
     }
 
     # 5. Count Check (after validation)
@@ -267,13 +294,17 @@ try {
     $htPrevious = [System.Collections.Generic.Dictionary[string,object]]::new([int]$Previous.Count, $anchorComparer)
     for ($i= 0; $i -lt $Previous.Count; $i++)
     {
-        $htPrevious.Add($Previous[$i].$prevAnchorRaw, $Previous[$i])
+        if (-not $htPrevious.ContainsKey($Previous[$i].$prevAnchorRaw)) {
+            $htPrevious.Add($Previous[$i].$prevAnchorRaw, $Previous[$i])
+        }
     }
 
     $htCurrent = [System.Collections.Generic.Dictionary[string,object]]::new([int]$Current.Count, $anchorComparer)
     for ($i= 0; $i -lt $Current.Count; $i++)
     {
-        $htCurrent[$Current[$i].$currAnchorRaw] = $Current[$i]
+        if (-not $htCurrent.ContainsKey($Current[$i].$currAnchorRaw)) {
+            $htCurrent.Add($Current[$i].$currAnchorRaw, $Current[$i])
+        }
     }
 
     $changes = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -290,12 +321,15 @@ try {
 
     # Progress
     $progressId = 1
+    $totalPrev = $htPrevious.Count
+    $iPrev = 0
+    $totalCurr = $htCurrent.Count
+    $iCurr = 0
     Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Phase 1/2: Matching Previous vs Current" -PercentComplete 0
 
     try {
         foreach ($key in $htPrevious.Keys)
         {
-            if (-not $totalPrev) { $totalPrev = $htPrevious.Count; $iPrev = 0 }
             $iPrev++
             $changeObject = @{}
             $changeObject[$AnchorColumn] = $key
@@ -317,6 +351,7 @@ try {
                 }
                 continue
             }
+
             $isUpdate = $false
             #"User exists in both files. $($key)" | Write-Verbose
             foreach ($n in $previousHeadersNorm)
@@ -329,6 +364,7 @@ try {
                 $currValue = $htCurrent[$key].$currRaw
 
                 $valuesDiffer = if ($CaseSensitive) { $prevValue -cne $currValue } else { $prevValue -ine $currValue }
+
                 if ($valuesDiffer)
                 {
                     #"Values do not match. Column: $($n)   Previous: $prevValue   Current: $currValue" | Write-Verbose
@@ -355,7 +391,6 @@ try {
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Phase 2/2: Scanning Current for Additions" -PercentComplete 50
         foreach ($key in $htCurrent.Keys)
         {
-            if (-not $totalCurr) { $totalCurr = $htCurrent.Count; $iCurr = 0 }
             $iCurr++
             if (-not $htPrevious.ContainsKey($key))
             {
@@ -365,7 +400,7 @@ try {
                 $changeObject["ChangeType"] = "Add"
                 $adds++
 
-            foreach ($n in $previousHeadersNorm)
+                foreach ($n in $previousHeadersNorm)
                 {
                     $currRaw = $currHeaderMap[$n]
                     $changeObject["old $n"] = ""
@@ -378,14 +413,16 @@ try {
                 Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Phase 2/2: Scanning Current for Additions ($iCurr of $totalCurr)" -PercentComplete $pct
             }
         }
-        if ($changes.Count -gt 0)
+        if (($adds + $updates + $deletes) -gt 0)
         {
-            $changes | Select-Object -Property $reportColumns |
+            $sortedChanges = $changes | Sort-Object { $_.$AnchorColumn } -CaseSensitive:$CaseSensitive
+            $sortedChanges | Select-Object -Property $reportColumns |
                 Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -ErrorAction Stop
+            Write-Host "Changes CSV written to: $changesCSVFile"
         }
-        if (($adds + $updates + $deletes) -eq 0)
+        else
         {
-            Write-Host "No changes detected"
+            Write-Host "No changes detected; no CSV written"
         }
     }
     finally {
@@ -393,9 +430,14 @@ try {
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Completed
     }
     # Summary output
-    Write-Host ("Summary: Adds={0}, Updates={1}, Deletes={2}" -f $adds, $updates, $deletes)
+    $nones = ($changes | Where-Object { $_.ChangeType -eq "None" }).Count
+    Write-Host ("Summary: Adds={0}, Updates={1}, Deletes={2}, Unchanged={3}" -f $adds, $updates, $deletes, $nones)
+
+    $elapsed = (Get-Date) - $scriptStartTime
+    $elapsedStr = "{0}m {1}s" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
+    Write-Host "Elapsed: $elapsedStr"
 }
 catch {
     Write-Error $_
-    exit 1    
+    exit 1
 }
