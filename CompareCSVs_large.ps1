@@ -1,10 +1,11 @@
-<# 
+<#
 .SYNOPSIS
 Sort-merge compares two CSV files using temporary sorted files.
 
 .DESCRIPTION
 Externalized sort-merge on disk to bound memory usage:
 - Robust header parsing and strict anchor validation.
+- Detects and warns about duplicate anchor values (uses first occurrence only).
 - Sorts both CSVs by the anchor and merges them.
 - Temp sorted files are created next to the source CSVs and always cleaned up.
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
@@ -47,6 +48,8 @@ None. Writes a changes CSV to -OutputFolder and summary messages to the console.
 .NOTES
 Requires Microsoft.VisualBasic for TextFieldParser header parsing.
 Temporary files are removed in a finally block even if errors occur.
+Duplicate anchor detection: When duplicates are found, the script warns with yellow text
+showing the anchor value and row numbers, then processes only the first occurrence.
 #>
 [CmdletBinding()]
 Param(
@@ -71,6 +74,8 @@ Param(
     [switch]$CaseSensitive
 )
 try {
+    $scriptStartTime = Get-Date
+
     # Resolve delimiter from name
     switch ($DelimiterName) {
         'comma'     { $Delimiter = ',' }
@@ -221,6 +226,7 @@ try {
     $currAnchorRaw = $currHeaderMap[$anchorNorm]
     if (-not $prevAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Previous CSV headers: $($previousHeadersRaw -join ', ')" }
     if (-not $currAnchorRaw) { throw "Anchor column '$AnchorColumn' not found in Current CSV headers: $($currentHeadersRaw -join ', ')" }
+    Write-Host "Note: Output columns use trimmed and lowercase-normalized header names for consistency."
 
     $reportColumns = [System.Collections.Generic.List[string]]::new(2 + (2 * $previousHeadersNorm.Count))
     $reportColumns.Add($AnchorColumn)
@@ -231,7 +237,7 @@ try {
         $reportColumns.Add("new $($prop)")
     }
     # Summary counters
-    $adds = 0; $updates = 0; $deletes = 0
+    $adds = 0; $updates = 0; $deletes = 0; $nones = 0;
 
     # Begin processing files
     $previousCSVTempSorted = "$PreviousCSVFile.$fileTime.sorted"
@@ -246,6 +252,7 @@ try {
         $prevTotal = 0
         $anchorSetPrev = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
         $prevRowIndex = 0
+        $duplicateAnchorsPrev = @{}
         Resolve-ImportCsv -LiteralPath $PreviousCSVFile -Delimiter $Delimiter -EncodingName $EncodingName |
             ForEach-Object {
                 $prevRowIndex++
@@ -253,7 +260,13 @@ try {
                 $anchor = $_.$prevAnchorRaw
                 if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Previous record (row $prevRowIndex): $($_)." }
                 # 2. Duplicate Anchor Value Check
-                if (-not $anchorSetPrev.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Previous file (row $prevRowIndex)." }
+                if (not $anchorSetPrev.Add($anchor)) {
+                    if (-not $duplicateAnchorsPrev.ContainsKey($anchor)) {
+                        $duplicateAnchorsPrev[$anchor] = @($prevRowIndex)
+                    } else {
+                        $duplicateAnchorsPrev[$anchor] += $prevRowIndex
+                    }
+                }
                 # 3. Consistent Row Length Check
                 $actualColumns = @($_.PSObject.Properties).Count
                 if ($actualColumns -ne $previousHeadersRaw.Count) { throw "Row $prevRowIndex with anchor '$anchor' in Previous file has $actualColumns columns, expected $($previousHeadersRaw.Count)." }
@@ -278,7 +291,13 @@ try {
                 $anchor = $_.$currAnchorRaw
                 if ([string]::IsNullOrWhiteSpace($anchor)) { throw "Anchor column '$AnchorColumn' is null or empty string in Current record (row $currRowIndex): $($_)." }
                 # 2. Duplicate Anchor Value Check
-                if (-not $anchorSetCurr.Add($anchor)) { throw "Duplicate anchor value '$anchor' found in Current file (row $currRowIndex)." }
+                if (-not $anchorSetCurr.Add($anchor)) {
+                    if (-not $duplicateAnchorsCurr.ContainsKey($anchor)) {
+                        $duplicateAnchorsCurr[$anchor] = @($currRowIndex)
+                    } else {
+                        $duplicateAnchorsCurr[$anchor] += $currRowIndex
+                    }
+                }
                 # 3. Consistent Row Length Check
                 $actualColumns = @($_.PSObject.Properties).Count
                 if ($actualColumns -ne $currentHeadersRaw.Count) { throw "Row $currRowIndex with anchor '$anchor' in Current file has $actualColumns columns, expected $($currentHeadersRaw.Count)." }
@@ -303,6 +322,7 @@ try {
         if (-not $currHasNext) { throw "No records found in Current CSV file." }
 
         $changeBuffer = [System.Collections.Generic.List[object]]::new($BatchSize)
+        $processedAnchors = New-Object 'System.Collections.Generic.HashSet[string]' ($anchorComparer)
 
         while ($prevHasNext -or $currHasNext)
         {
@@ -315,6 +335,14 @@ try {
             {
                 # New record (addition)
                 $currKey = $currRow.$currAnchorRaw
+
+                if ($processedAnchors.Contains($currKey)) {
+                    # Skip duplicate
+                    $currHasNext = $currEnum.MoveNext()
+                    continue
+                }
+                $processedAnchors.Add($currKey) | Out-Null
+
                 $change["ChangeType"] = "Add"
                 $adds++
                 $change[$AnchorColumn] = $currKey
@@ -336,7 +364,7 @@ try {
                 }
                 $processedCurr++
                 $currHasNext = $currEnum.MoveNext()
-                if ( (($processedPrev + $processedCurr) % 2000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
+                if ( (($processedPrev + $processedCurr) % 1000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
                     $total = [math]::Max(1, $prevTotal + $currTotal)
                     $pct = [int]((($processedPrev + $processedCurr) / $total) * 60) + 40
                     if ($pct -gt 100) { $pct = 100 }
@@ -348,6 +376,14 @@ try {
             {
                 # ...process deletion...
                 $prevKey = $prevRow.$prevAnchorRaw
+
+                if ($processedAnchors.Contains($prevKey)) {
+                    # Skip duplicate
+                    $prevHasNext = $prevEnum.MoveNext()
+                    continue
+                }
+                $processedAnchors.Add($prevKey) | Out-Null
+
                 #"User removed in Current file. $($prevKey)" | Write-Verbose
                 $change[$AnchorColumn] = $prevKey
                 $change["ChangeType"] = "Delete"
@@ -368,7 +404,7 @@ try {
                 }
                 $processedPrev++
                 $prevHasNext = $prevEnum.MoveNext()
-                if ( (($processedPrev + $processedCurr) % 2000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
+                if ( (($processedPrev + $processedCurr) % 1000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
                     $total = [math]::Max(1, $prevTotal + $currTotal)
                     $pct = [int]((($processedPrev + $processedCurr) / $total) * 60) + 40
                     if ($pct -gt 100) { $pct = 100 }
@@ -386,6 +422,15 @@ try {
             if ($keysEqual)
             {
                 # Compare fields for update/none
+
+                if ($processedAnchors.Contains($prevKey)) {
+                    # Skip duplicate
+                    $prevHasNext = $prevEnum.MoveNext()
+                    $currHasNext = $currEnum.MoveNext()
+                    continue
+                }
+                $processedAnchors.Add($prevKey) | Out-Null
+
                 #"User exists in both files. $($prevKey)" | Write-Verbose
                 $change[$AnchorColumn] = $prevKey
                 $isUpdate = $false
@@ -417,12 +462,19 @@ try {
                 else
                 {
                     $change["ChangeType"] = "None"
+                    $nones++
                 }
                 $changeObject = [PSCustomObject]$change
+                $changeBuffer.Add($changeObject)
+                if ($changeBuffer.Count -ge $BatchSize) {
+                    $changeBuffer | Select-Object -Property $reportColumns |
+                        Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
+                    $changeBuffer.Clear()
+                }
                 $processedPrev++; $processedCurr++
                 $prevHasNext = $prevEnum.MoveNext()
                 $currHasNext = $currEnum.MoveNext()
-                if ( (($processedPrev + $processedCurr) % 2000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
+                if ( (($processedPrev + $processedCurr) % 1000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
                     $total = [math]::Max(1, $prevTotal + $currTotal)
                     $pct = [int]((($processedPrev + $processedCurr) / $total) * 60) + 40
                     if ($pct -gt 100) { $pct = 100 }
@@ -432,6 +484,13 @@ try {
             elseif ( ($CaseSensitive -and ($prevKey -clt $currKey)) -or (-not $CaseSensitive -and ($prevKey -ilt $currKey)) )
             {
                 # Record deleted
+                if ($processedAnchors.Contains($prevKey)) {
+                    # Skip duplicate
+                    $prevHasNext = $prevEnum.MoveNext()
+                    continue
+                }
+                $processedAnchors.Add($prevKey) | Out-Null
+
                 #"User removed in Current file. $($prevKey)" | Write-Verbose
                 $change[$AnchorColumn] = $prevKey
                 $change["ChangeType"] = "Delete"
@@ -445,9 +504,15 @@ try {
                     $change["new $n"] = ""
                 }
                 $changeObject = [PSCustomObject]$change
+                $changeBuffer.Add($changeObject)
+                if ($changeBuffer.Count -ge $BatchSize) {
+                    $changeBuffer | Select-Object -Property $reportColumns |
+                        Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
+                    $changeBuffer.Clear()
+                }
                 $processedPrev++
                 $prevHasNext = $prevEnum.MoveNext()
-                if ( (($processedPrev + $processedCurr) % 2000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
+                if ( (($processedPrev + $processedCurr) % 1000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
                     $total = [math]::Max(1, $prevTotal + $currTotal)
                     $pct = [int]((($processedPrev + $processedCurr) / $total) * 60) + 40
                     if ($pct -gt 100) { $pct = 100 }
@@ -458,10 +523,19 @@ try {
             {
                 # New record (addition)
                 $currKey = $currRow.$currAnchorRaw
+
+                if ($processedAnchors.Contains($currKey)) {
+                    # Skip duplicate
+                    $currHasNext = $currEnum.MoveNext()
+                    continue
+                }
+                $processedAnchors.Add($currKey) | Out-Null
+
                 $change["ChangeType"] = "Add"
                 $adds++
                 $change[$AnchorColumn] = $currKey
                 #"User add to Current file. $($currKey)" | Write-Verbose
+
                 foreach ($n in $previousHeadersNorm)
                 {
                     $currRaw = $currHeaderMap[$n]
@@ -471,31 +545,41 @@ try {
                     $change["new $n"] = $currValue
                 }
                 $changeObject = [PSCustomObject]$change
+                $changeBuffer.Add($changeObject)
+                if ($changeBuffer.Count -ge $BatchSize) {
+                    $changeBuffer | Select-Object -Property $reportColumns |
+                        Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
+                    $changeBuffer.Clear()
+                }
                 $processedCurr++
                 $currHasNext = $currEnum.MoveNext()
-                if ( (($processedPrev + $processedCurr) % 2000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
+                if ( (($processedPrev + $processedCurr) % 1000) -eq 0 -or (-not $prevHasNext -and -not $currHasNext) ) {
                     $total = [math]::Max(1, $prevTotal + $currTotal)
                     $pct = [int]((($processedPrev + $processedCurr) / $total) * 60) + 40
                     if ($pct -gt 100) { $pct = 100 }
                     Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Merging... ($($processedPrev + $processedCurr) of $total rows)" -PercentComplete $pct
                 }
             }
-            $changeBuffer.Add($changeObject)
-            if ($changeBuffer.Count -ge $BatchSize)
-            {
-                $changeBuffer | Select-Object -Property $reportColumns |
-                    Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
-                $changeBuffer.Clear()
-            }
         }
-        if ($changeBuffer.Count -gt 0)
+
+        foreach ($anchor in $duplicateAnchorsPrev.Keys | Where-Object { $duplicateAnchorsPrev[$_].Count -gt 1 }) {
+            $rows = $duplicateAnchorsPrev[$anchor] -join ', '
+            Write-Host "WARNING: Duplicate anchor '$anchor' found in Previous file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
+        }
+
+        foreach ($anchor in $duplicateAnchorsCurr.Keys | Where-Object { $duplicateAnchorsCurr[$_].Count -gt 1 }) {
+            $rows = $duplicateAnchorsCurr[$anchor] -join ', '
+            Write-Host "WARNING: Duplicate anchor '$anchor' found in Current file. Using first record. Duplicate rows: $rows" -ForegroundColor Yellow
+        }
+
+        if (($adds + $updates + $deletes) -gt 0)
         {
             $changeBuffer | Select-Object -Property $reportColumns |
                 Export-Csv -LiteralPath $changesCSVFile -Delimiter $Delimiter -NoTypeInformation -Encoding $exportEncoding -Append -ErrorAction Stop
+            Write-Host "Changes CSV written to: $changesCSVFile"
         }
-        # No changes notice
-        if (($adds + $updates + $deletes) -eq 0) {
-            Write-Host "No changes detected"
+        else {
+            Write-Host "No changes detected; no CSV written"
         }
     }
     finally
@@ -504,7 +588,11 @@ try {
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Completed
     }
     # Summary output
-    Write-Host "Summary: Adds=$adds, Updates=$updates, Deletes=$deletes"
+    Write-Host "Summary: Adds=$adds, Updates=$updates, Deletes=$deletes, Unchanged=$nones"
+
+    $elapsed = (Get-Date) - $scriptStartTime
+    $elapsedStr = "{0}m {1}s" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
+    Write-Host "Elapsed: $elapsedStr"
 }
 catch {
     Write-Error $_
