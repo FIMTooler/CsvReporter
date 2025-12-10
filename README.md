@@ -48,6 +48,34 @@ Parameters (script-specific)
 - CompareCSVs_large.ps1: -BatchSize (default 1000)
 - CompareCSVs_DetailedV2.ps1: -ValueTransforms (hashtable of column transformations), -IgnoreColumns (array of column names to skip)
 
+ValueTransforms syntax (DetailedV2 only)
+-ValueTransforms applies transformations to Previous file values during comparison only (original values preserved in output). Format: @{ 'ColumnName' = @{ 'OldValue' = 'NewValue'; ... }; ... }
+Three transformation types:
+- Direct replacement: 'OldValue' = 'NewValue' (replaces value directly)
+- Prefix modifier: 'OldValue' = '<<prefix' (prepends prefix to original value; useful for padding: '5' = '<<00' becomes '005')
+- Suffix modifier: 'OldValue' = '>>suffix' (appends suffix to original value; useful for codes: 'USA' = '>>0' becomes 'USA0')
+- Wildcard key '*': Matches any value not explicitly mapped (fallback rule)
+Example wrapper script:
+  $transforms = @{
+      'worker_type' = @{
+          'Employee' = 'EMP'
+          'Contingent Worker' = 'CWK'
+      }
+      'profit_center' = @{
+          '*' = '>>0'
+      }
+      'legal_entity' = @{
+          '*' = '>>0'
+      }
+  }
+  .\CompareCSVs_DetailedV2.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
+    -AnchorColumn EmployeeID -OutputFolder .\out -ValueTransforms $transforms -DelimiterName comma -EncodingName utf8BOM
+
+-IgnoreColumns syntax (DetailedV2 only)
+Excludes specified columns from comparison. Format: @('ColumnName1', 'ColumnName2', ...)
+Example: -IgnoreColumns @('LastModifiedDate', 'ProcessingNotes')
+Cannot ignore the anchor column. Ignored columns still appear in output but are not compared.
+
 Delimiters
 - comma => ,
 - tab => `t
@@ -60,10 +88,11 @@ Output
 - Standard output (Small, Medium, Large):
   - Columns: AnchorColumn, ChangeType, and for each header: "old header" and "new header"
   - Includes all rows (Add, Update, Delete, None)
-- Detailed output (Detailed):
+- Detailed output (Detailed and DetailedV2):
   - Columns: AnchorColumn, ChangeType, and for each header: "old header", "new header", "match header"
   - Includes all rows (Add, Update, Delete, None) with per-field match indicators (True/False)
   - Summary row inserted as first record showing mismatch counts per column ("X of Y FALSE")
+  - DetailedV2 only: Summary row's "old" column also shows applied transform rule counts (e.g., "Employee→EMP (5 applied), Contingent Worker→CWK (3 applied)")
   - Output sorted by anchor column
 - ChangeType meanings (all scripts):
   - Add: Exists only in Current
@@ -86,6 +115,8 @@ Usage examples
   - .\CompareCSVs_Detailed.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv -AnchorColumn EmployeeID -OutputFolder .\out -DelimiterName comma -EncodingName utf8BOM
 - Detailed validation with value transforms (normalize data during comparison):
   - .\CompareCSVs_DetailedV2.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv -AnchorColumn EmployeeID -OutputFolder .\out -ValueTransforms @{'Salary'='<<0.00'} -DelimiterName comma -EncodingName utf8BOM
+- Detailed validation with column filtering (exclude audit columns):
+  - .\CompareCSVs_DetailedV2.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv -AnchorColumn EmployeeID -OutputFolder .\out -IgnoreColumns @('LastModifiedDate','ProcessingNotes') -DelimiterName comma -EncodingName utf8BOM
 
 Choosing a script
 - CompareCSVs_small.ps1: Entire files in memory. Fastest and simplest for small/medium datasets. Use when you need a quick list of changes.
