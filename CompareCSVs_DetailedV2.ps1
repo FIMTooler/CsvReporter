@@ -50,6 +50,17 @@ so you can copy/paste header names directly from your CSV files.
 Transformations applied to Previous file values respecting -CaseSensitive flag.
 Transformations applied during comparison only; original values stored in output.
 
+.PARAMETER DateFormats
+Hashtable for date normalization per column. Format:
+  @{
+    'ColumnName' = @{
+      Previous = 'MM/dd/yyyy'   # format of Previous file values
+      Current  = 'yyyy-MM-dd'   # format of Current file values
+      Output   = 'yyyy-MM-dd'   # normalized string used for comparison
+    }
+  }
+Column names are normalized (trim/lower). Parsing uses invariant culture. If parsing fails, the raw value is kept and a warning is emitted. Original values are preserved in old/new columns; normalized strings are used for comparison/match.
+
 .INPUTS
 None. You cannot pipe objects to this script.
 
@@ -102,6 +113,7 @@ Param(
     [string]$EncodingName = 'utf8BOM',
     [switch]$CaseSensitive,
     [hashtable]$ValueTransforms = @{},
+    [hashtable]$DateFormats = @{},
     [string[]]$IgnoreColumns = @()
 )
 try {
@@ -184,6 +196,20 @@ try {
                 'auto'    { 'utf8' }
                 default   { $EncodingName }
             }
+        }
+    }
+
+    function Try-NormalizeDate {
+        param(
+            [Parameter(Mandatory)][string]$Value,
+            [Parameter(Mandatory)][string]$InputFormat,
+            [Parameter(Mandatory)][string]$OutputFormat
+        )
+        try {
+            $dt = [DateTime]::ParseExact($Value, $InputFormat, [System.Globalization.CultureInfo]::InvariantCulture)
+            return $dt.ToString($OutputFormat, [System.Globalization.CultureInfo]::InvariantCulture)
+        } catch {
+            return $null
         }
     }
 
@@ -357,6 +383,38 @@ try {
 
             # Store the normalized transform map with normalized column name key
             $normalizedValueTransforms[$transformColNorm] = $transformMap
+        }
+    }
+
+    # Normalize DateFormats keys (column names) and validate maps
+    $normalizedDateFormats = @{}
+    if ($DateFormats -and $DateFormats.Count -gt 0) {
+        foreach ($dfCol in $DateFormats.Keys) {
+            $dfColNorm = $dfCol.Trim().ToLowerInvariant()
+            if ($dfColNorm -notin $previousHeadersNorm) {
+                throw "Column '$dfCol' in -DateFormats does not exist in CSV headers. Available columns: $($previousHeadersRaw -join ', ')"
+            }
+            if ($normalizedIgnoreColumns -and ($dfColNorm -in $normalizedIgnoreColumns)) {
+                throw "Column '$dfCol' in -DateFormats cannot be normalized because it is included in -IgnoreColumns."
+            }
+            $dfMap = $DateFormats[$dfCol]
+            if ($dfMap -isnot [hashtable]) {
+                throw "DateFormats entry for '$dfCol' must be a hashtable with Previous/Current/Output keys."
+            }
+            $prevFmt = $dfMap['Previous']
+            $currFmt = $dfMap['Current']
+            $outFmt  = $dfMap['Output']
+            if ([string]::IsNullOrWhiteSpace($prevFmt) -or [string]::IsNullOrWhiteSpace($currFmt)) {
+                throw "DateFormats for '$dfCol' requires non-empty Previous and Current formats."
+            }
+            if ([string]::IsNullOrWhiteSpace($outFmt)) {
+                $outFmt = 'yyyy-MM-dd'
+            }
+            $normalizedDateFormats[$dfColNorm] = @{
+                Previous = $prevFmt
+                Current  = $currFmt
+                Output   = $outFmt
+            }
         }
     }
 
@@ -538,45 +596,58 @@ try {
                 $prevValue = $htPrevious[$key].$prevRaw
                 $currValue = $htCurrent[$key].$currRaw
 
-                # Apply value transformation for comparison (if configured)
+                # Normalize dates (if configured) before value transforms
                 $prevValueForComparison = $prevValue
-                if ($normalizedValueTransforms -and $normalizedValueTransforms.ContainsKey($n) -and -not [string]::IsNullOrWhiteSpace($prevValue)) {
+                $currValueForComparison = $currValue
+                if ($normalizedDateFormats -and $normalizedDateFormats.ContainsKey($n)) {
+                    $df = $normalizedDateFormats[$n]
+
+                    $normalizedPrev = $null
+                    if (-not [string]::IsNullOrWhiteSpace($prevValue)) {
+                        $normalizedPrev = Try-NormalizeDate -Value $prevValue -InputFormat $df.Previous -OutputFormat $df.Output
+                        if (-not $normalizedPrev) { Write-Warning "Date normalize failed (Previous) col '$n' value '$prevValue'" }
+                    }
+
+                    $normalizedCurr = $null
+                    if (-not [string]::IsNullOrWhiteSpace($currValue)) {
+                        $normalizedCurr = Try-NormalizeDate -Value $currValue -InputFormat $df.Current -OutputFormat $df.Output
+                        if (-not $normalizedCurr) { Write-Warning "Date normalize failed (Current) col '$n' value '$currValue'" }
+                    }
+
+                    if ($normalizedPrev) { $prevValueForComparison = $normalizedPrev }
+                    if ($normalizedCurr) { $currValueForComparison = $normalizedCurr }
+                }
+
+                # Apply value transformation for comparison (if configured) on the (possibly normalized) previous value
+                if ($normalizedValueTransforms -and $normalizedValueTransforms.ContainsKey($n) -and -not [string]::IsNullOrWhiteSpace($prevValueForComparison)) {
                     $transformMap = $normalizedValueTransforms[$n]
                     $mapKey = if ($CaseSensitive) {
-                        $transformMap.Keys | Where-Object { $_ -ceq $prevValue } | Select-Object -First 1
+                        $transformMap.Keys | Where-Object { $_ -ceq $prevValueForComparison } | Select-Object -First 1
                     } else {
-                        $transformMap.Keys | Where-Object { $_ -ieq $prevValue } | Select-Object -First 1
+                        $transformMap.Keys | Where-Object { $_ -ieq $prevValueForComparison } | Select-Object -First 1
                     }
                     if ($mapKey) {
                         $transformValue = $transformMap[$mapKey]
                     } elseif ($transformMap.ContainsKey('*')) {
-                        # Fall back to wildcard if no exact match
                         $mapKey = '*'
                         $transformValue = $transformMap['*']
                     }
 
                     if ($mapKey) {
-                        # Track that this rule was applied
-                        if ($transformAppliedCounts[$n]) {
-                            $transformAppliedCounts[$n][$mapKey]++
-                        }
-                        # Handle prefix (<<) and suffix (>>) modifiers for append/prepend operations
+                        if ($transformAppliedCounts[$n]) { $transformAppliedCounts[$n][$mapKey]++ }
                         if ($transformValue.StartsWith('<<')) {
-                            # Prepend mode: <<prefix
                             $prefix = $transformValue.Substring(2)
-                            $prevValueForComparison = $prefix + $prevValue
+                            $prevValueForComparison = $prefix + $prevValueForComparison
                         } elseif ($transformValue.StartsWith('>>')) {
-                            # Append mode: >>suffix
                             $suffix = $transformValue.Substring(2)
-                            $prevValueForComparison = $prevValue + $suffix
+                            $prevValueForComparison = $prevValueForComparison + $suffix
                         } else {
-                            # Direct replacement mode
                             $prevValueForComparison = $transformValue
                         }
                     }
                 }
 
-                $valuesDiffer = if ($CaseSensitive) { $prevValueForComparison -cne $currValue } else { $prevValueForComparison -ine $currValue }
+                $valuesDiffer = if ($CaseSensitive) { $prevValueForComparison -cne $currValueForComparison } else { $prevValueForComparison -ine $currValueForComparison }
 
                 $changeObject["old $n"] = $prevValue
                 $changeObject["new $n"] = $currValue
@@ -718,5 +789,4 @@ try {
 catch {
     Write-Error $_
     exit 1
-
 }
