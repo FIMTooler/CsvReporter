@@ -46,22 +46,27 @@ Peak memory on PowerShell 7, on top of the ~70 MB PowerShell itself uses:
 | 150,000 | 5,000 rows x 30 columns | 75 MB | 70 MB | 65 MB |
 | 1 million | 25,000 x 40 | 250 MB | 150 MB | ~70 MB |
 | 3 million | 100,000 x 30 | 600 MB | 370 MB | ~70 MB |
-| 10 million | 200,000 x 50 | 1.9 GB | 1.1 GB | ~70 MB |
+| 10 million | 200,000 x 50 | 1.9 GB | 0.9 GB | 218 MB |
 | 30 million | 600,000 x 50 | 5.5 GB | 3.2 GB | ~70 MB |
+
+The 10 million row's `medium` and `large` figures are current, measured at the default `-BatchSize`.
+The 150,000 / 1 million / 3 million rows use narrower columns not measured at that default, and the
+30 million row has never been measured at all - treat any remaining `~70 MB` `large` figure as
+unconfirmed rather than current.
 
 **Use `medium` until its column exceeds the memory you can spare, then switch to `large`.** Below
 about 150,000 cells all three are within 10 MB of each other and the choice makes no difference.
 
-**The `medium` column above assumes a typical comparison, where most values match.** `medium` saves
-memory by discarding a value once it is confirmed unchanged — the more of your data actually differs
-between the two files, the less there is to discard, and the closer `medium`'s memory moves toward
-`small`'s. Measured at 5 million cells (100,000 rows x 50 columns): a typical comparison showed
-`medium` using 398 MB less than `small`; a file where every single value had changed showed only a
-59 MB gap. If you're comparing two files that are mostly unrelated rather than two snapshots of mostly
-the same data, expect `medium`'s advantage to shrink toward that worst case. `small`'s own figures
-never move with how much changes, since it holds every value regardless of match status. `large`'s
-figures don't move either, for a different reason — its memory is set by `-BatchSize` before any
-comparison happens, not by how much of the data differs.
+**The `medium` column above assumes a typical comparison, where most values match** — though this
+matters far less than it used to. `medium` saves memory two ways: discarding a value once confirmed
+unchanged, and never holding the full list of changes before writing. The first saving shrinks as more
+of your data actually differs; the second doesn't care how much changed, and it now dominates. Measured
+at 5 million cells (100,000 rows x 50 columns): a typical comparison showed `medium` using 478 MB less
+than `small`; a file where every single value had changed still showed 476 MB less — `medium`'s
+advantage barely moves with how much changes. `small`'s own figures never move with how much changes,
+since it holds every value regardless of match status. `large`'s figures don't move either, for a
+different reason — its memory is set by `-BatchSize` before any comparison happens, not by how much of
+the data differs.
 
 Measured up to 10 million cells; the larger figures follow the same per-cell model. `Detailed` shares
 `medium`'s architecture, not `small`'s — neither file is held in full — so treat `medium`'s column as
