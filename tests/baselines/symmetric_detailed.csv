@@ -1,0 +1,6 @@
+﻿"ID","ChangeType","old dept","new dept","match dept","old name","new name","match name","old notes","new notes","match notes"
+"SUMMARY","---","","","1 of 2 FALSE","","","0 of 2 FALSE","","","0 of 2 FALSE"
+"1","None","HR","HR","True","Alice","Alice","True","plain","plain","True"
+"2","Update","IT","FINANCE","False","Bob","Bob","True","Line1
+Line2","Line1
+Line2","True"

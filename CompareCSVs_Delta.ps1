@@ -1,23 +1,44 @@
 ﻿<#
 .SYNOPSIS
-Streams and compares two CSV files, writing a changes report.
+Streams and compares two CSV files, writing every changed record as a whole row - an incremental
+change feed for a downstream system that cannot itself produce one.
 
 .DESCRIPTION
-Streaming comparison suited for mid/large CSVs:
+Where a standard changes report emits old/new value pairs per column, this script emits the
+complete record: an Add or Update row is the whole Current record, a Delete row is the whole
+Previous record. There is no per-column detail and no hashing - two records are compared value by
+value, not by their formatted text, so a difference only in quoting style never reports as a change.
+
 - Robust header parsing (quoted headers, embedded delimiters).
 - Strict anchor presence; fails if the anchor column is missing.
 - Builds a lookup of "Previous", then streams "Current". Current is never held in memory, and each
   matched key is removed from the Previous lookup as it is consumed, so the lookup shrinks while
-  the comparison runs. Peak memory is therefore well below the in-memory script for the same input.
+  the comparison runs.
 - Detects and warns about duplicate anchor values (uses first occurrence only).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
-- Outputs a CSV with ChangeType and old/new values for changed columns.
-  - On Update rows only the columns that actually changed are populated. Unchanged columns are
-    left as empty unquoted fields, which keeps a mostly-unchanged report small and makes the
-    changed cells easy to spot. An explicitly empty value is written as "" instead.
+- Output columns are every column of Current, in Current's physical order. The anchor is an
+  ordinary column in its natural position - not hoisted to the front and not duplicated. A
+  ChangeType column, naming Add/Update/Delete, is prepended unless -SeparateDeleteFile is used.
+- Add and Update rows carry Current's values. Delete rows carry Previous's values, permuted into
+  Current's column order - Previous and Current need not share a column order for this to work.
+  Unchanged records are counted but never written; that omission is the resource saving the script
+  exists for.
+- -SeparateDeleteFile splits the output into two schema-identical files - Adds/Updates in one,
+  Deletes in the other - neither carrying a ChangeType column, for a consumer whose importer cannot
+  tolerate an extra column. Add and Update become indistinguishable in that mode; that is the
+  accepted trade for a schema-identical file.
+- -AnchorOnlyDeletes reduces a Delete row's non-anchor fields to empty, without changing the header
+  or the file layout in either mode.
 - Rows are written in the order they are found: Current's row order, then deletions in whatever
   order the lookup enumerates them. Output is not sorted by anchor.
-- Prints a one-line summary with counts and elapsed time.
+- Always writes an output file, even when it holds only a header row - both files, independently,
+  in split mode. This script feeds an automated process rather than being read by a person, so a
+  downstream job should never have to distinguish "no file" from "job failed".
+- The file mixes two points in time: Add/Update rows are post-change state, Delete rows are the
+  last known state before removal. Reading every row as uniform "current state" resurrects deleted
+  records.
+- Prints a one-line summary with counts, including the unchanged count that is never emitted, and
+  elapsed time.
 
 .PARAMETER PreviousCSVFile
 Path to the "Previous" CSV file.
@@ -29,7 +50,7 @@ Path to the "Current" CSV file.
 Header name of the key/anchor column used to join rows.
 
 .PARAMETER OutputFolder
-Folder where the changes CSV will be written.
+Folder where the delta CSV(s) will be written.
 
 .PARAMETER DelimiterName
 Logical delimiter name: comma, tab, semicolon, or pipe.
@@ -63,15 +84,64 @@ switch, the run throws on the first duplicate it finds and writes no report - us
 is meant to be unique, since a duplicate is then a data-quality problem (often a wrong
 -AnchorColumn) rather than something to quietly work around.
 
+.PARAMETER NormalizeHeaderNames
+Opt in to trimmed, lowercased output header names, matching the trim+lowercase treatment the rest of
+the family applies. Off by default: unlike the old/new column names the rest of the family
+generates, this script's output headers are Current's own names, and lowercasing them by default
+would silently break a case-sensitive downstream consumer.
+
+This normalizes names this script derives, not names you supplied. Current's header names are always
+affected. The ChangeType column name is affected only when it was left at its default - see
+-ChangeTypeColumnName.
+
+.PARAMETER AnchorOnlyDeletes
+Reduce every non-anchor field on a Delete row to empty. The header is unchanged in both modes - all
+columns stay present, only the anchor is populated on those rows.
+
+.PARAMETER Force
+Overwrite an existing output file. Without it, the run stops before any parsing begins if the
+resolved output path (or, in split mode, either resolved path) already exists - overwriting a delta
+that has not yet been consumed by its downstream process would destroy it unrecoverably.
+
+.PARAMETER OutputFileName
+Override the auto-derived main output filename. Must be a bare filename: no directory separator, no
+path-invalid character, not empty or whitespace. Taken verbatim - a missing ".csv" is not added.
+
+.PARAMETER ChangeTypeColumnName
+Header name for the leading Add/Update/Delete column in single-file mode. Default 'ChangeType'.
+Cannot be blank, and cannot collide (after trim and lowercase, regardless of -CaseSensitive) with any
+column name in Current - the run throws rather than silently renaming either one. Meaningless with
+-SeparateDeleteFile, since no such column is written in that mode; PowerShell rejects the combination
+at bind time rather than silently ignoring the parameter.
+
+With -NormalizeHeaderNames, this name is normalized only if it was left at its default: the default
+belongs to this script, a value you passed is yours and is used exactly as given. That is keyed on
+whether the parameter was supplied, not on its value - so under -NormalizeHeaderNames, passing
+-ChangeTypeColumnName ChangeType explicitly produces 'ChangeType', while omitting it produces
+'changetype'.
+
+.PARAMETER SeparateDeleteFile
+Write two schema-identical CSVs instead of one: Adds/Updates in the main file, Deletes in a second
+file, neither carrying a ChangeType column. Selects the split-mode parameter set.
+
+.PARAMETER DeleteFileName
+Override the auto-derived delete-file filename. Only valid with -SeparateDeleteFile. Same bare-
+filename rules as -OutputFileName, and must not resolve to the same name as -OutputFileName.
+
 .INPUTS
 None. You cannot pipe objects to this script.
 
 .OUTPUTS
-None. Writes a changes CSV to -OutputFolder and summary messages to the console.
+None. Writes one CSV (or two, with -SeparateDeleteFile) to -OutputFolder and summary messages to the
+console.
 
 .EXAMPLE
-.\CompareCSVs_medium.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
+.\CompareCSVs_Delta.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
   -AnchorColumn EmployeeID -OutputFolder .\out -DelimiterName comma -EncodingName utf8BOM -CaseSensitive
+
+.EXAMPLE
+.\CompareCSVs_Delta.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
+  -AnchorColumn EmployeeID -OutputFolder .\out -SeparateDeleteFile
 
 .NOTES
 Requires Microsoft.VisualBasic for TextFieldParser header parsing.
@@ -79,7 +149,7 @@ Duplicate anchor detection: When duplicates are found, the script warns with yel
 showing the anchor value and row numbers, then processes only the first occurrence - unless
 -RejectDuplicateAnchors is passed, in which case it fails the run on the first one instead.
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName='SingleFile')]
 Param(
     [Parameter(Mandatory=$true)]
     [ValidateScript({Test-Path -LiteralPath $_ -PathType Leaf })]
@@ -98,10 +168,21 @@ Param(
     [ValidateSet('auto','ascii','ansi','default','oem','unicode','utf8BOM','utf8NoBOM')]
     [string]$EncodingName = 'utf8BOM',
     [switch]$CaseSensitive,
-    [switch]$RejectDuplicateAnchors
+    [switch]$RejectDuplicateAnchors,
+    [switch]$NormalizeHeaderNames,
+    [switch]$AnchorOnlyDeletes,
+    [switch]$Force,
+    [String]$OutputFileName,
+    [Parameter(ParameterSetName='SingleFile')]
+    [String]$ChangeTypeColumnName = 'ChangeType',
+    [Parameter(Mandatory=$true, ParameterSetName='SplitDeletes')]
+    [switch]$SeparateDeleteFile,
+    [Parameter(ParameterSetName='SplitDeletes')]
+    [String]$DeleteFileName
 )
 try {
     $scriptStartTime = Get-Date
+    $isSplit = ($PSCmdlet.ParameterSetName -eq 'SplitDeletes')
 
     # Resolve delimiter from name
     $Delimiter = switch ($DelimiterName) {
@@ -115,6 +196,12 @@ try {
     # Validate AnchorColumn early
     if ([string]::IsNullOrWhiteSpace($AnchorColumn)) {
         throw "Parameter -AnchorColumn cannot be empty or whitespace."
+    }
+    # [ValidateNotNullOrEmpty()] is not sufficient here - a value of ' ' passes it. Only checked in
+    # single-file mode: the parameter belongs to that set alone, and this is where it becomes a
+    # literal output header.
+    if (-not $isSplit -and [string]::IsNullOrWhiteSpace($ChangeTypeColumnName)) {
+        throw "Parameter -ChangeTypeColumnName cannot be empty or whitespace."
     }
 
     # Resolve $OutputFolder once to a full, literal path
@@ -213,7 +300,8 @@ try {
 
     # Format one record as a CSV line. Every field is quoted (matching Windows PowerShell 5.1's
     # Export-Csv), so escaping reduces to doubling embedded quotes. A $null field is written as an
-    # empty *unquoted* field, which is how unchanged columns render on Update rows.
+    # empty *unquoted* field - the only place that renders is a Delete row's blanked-out columns
+    # under -AnchorOnlyDeletes.
     function ConvertTo-CsvLine {
         # Not Mandatory: a missing value would make PowerShell prompt, which hangs an unattended run.
         # [object[]], not [string[]]: a string[] parameter coerces an assigned $null to "".
@@ -236,12 +324,51 @@ try {
         return ($out -join $Delimiter)
     }
 
+    # Bare-filename validation for -OutputFileName/-DeleteFileName: no directory separator, no other
+    # character the filesystem itself would reject. GetInvalidFileNameChars() already includes both
+    # slash characters, so this rejects a path as well as an invalid name in one check.
+    function Test-BareFileName {
+        param([string]$Value, [string]$ParamName)
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            throw "Parameter -$ParamName cannot be empty or whitespace."
+        }
+        $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+        if ($Value.IndexOfAny($invalidChars) -ge 0) {
+            throw "Parameter -$ParamName '$Value' must be a bare filename: it contains a directory separator or another character the filesystem would reject."
+        }
+    }
+
     $fileTime = (Get-Date).ToString("yyyy-MM-dd_HHmmssfff")
     $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension((Resolve-Path -LiteralPath $CurrentCSVFile).ProviderPath)
-    $changesCSVFile = [System.IO.Path]::Combine($OutputFolder, ("Changes_{0}_GeneratedOn_{1}.csv" -f $baseFileName, $fileTime))
     # One Encoding object serves both directions: the read default (a BOM overrides it) and the
     # exact bytes written on export.
     $csvEncoding = Resolve-Encoding -EncodingName $EncodingName
+
+    if ($PSBoundParameters.ContainsKey('OutputFileName')) { Test-BareFileName -Value $OutputFileName -ParamName 'OutputFileName' }
+    if ($PSBoundParameters.ContainsKey('DeleteFileName')) { Test-BareFileName -Value $DeleteFileName -ParamName 'DeleteFileName' }
+
+    $mainFileName = if ($PSBoundParameters.ContainsKey('OutputFileName')) { $OutputFileName } else { "Delta_{0}_GeneratedOn_{1}.csv" -f $baseFileName, $fileTime }
+    $deleteFileName = $null
+    if ($isSplit) {
+        $deleteFileName = if ($PSBoundParameters.ContainsKey('DeleteFileName')) { $DeleteFileName } else { "Delta_Deletes_{0}_GeneratedOn_{1}.csv" -f $baseFileName, $fileTime }
+        if ($mainFileName.Trim() -ieq $deleteFileName.Trim()) {
+            throw "-OutputFileName and -DeleteFileName resolve to the same name ('$mainFileName'); they must differ."
+        }
+    }
+
+    $mainOutputPath = [System.IO.Path]::Combine($OutputFolder, $mainFileName)
+    $deleteOutputPath = if ($isSplit) { [System.IO.Path]::Combine($OutputFolder, $deleteFileName) } else { $null }
+
+    # Fail fast, before any parsing: an automated run should not spend minutes comparing large files
+    # only to die at the rename step. Move-Item at the rename below stays unforced without -Force,
+    # closing the gap if a file appears mid-run - this early check exists for the message and the
+    # fail-fast, not because the late one is missing.
+    if ((Test-Path -LiteralPath $mainOutputPath) -and -not $Force) {
+        throw "Output file already exists: $mainOutputPath. Pass -Force to overwrite it."
+    }
+    if ($isSplit -and (Test-Path -LiteralPath $deleteOutputPath) -and -not $Force) {
+        throw "Output file already exists: $deleteOutputPath. Pass -Force to overwrite it."
+    }
 
     # 1. Ensure headers from both CSV files match
     $previousHeadersRaw = Get-CsvHeaderFields -Path $PreviousCSVFile -Delimiter $Delimiter -DefaultEncoding $csvEncoding -Side 'Previous'
@@ -320,38 +447,73 @@ try {
     if (-not $currHeaderIdx.ContainsKey($anchorNorm)) { throw "Anchor column '$AnchorColumn' not found in Current CSV headers: $($currentHeadersRaw -join ', ')" }
     $prevAnchorIdx = $prevHeaderIdx[$anchorNorm]
     $currAnchorIdx = $currHeaderIdx[$anchorNorm]
-    Write-Host "Note: Output columns use trimmed and lowercase-normalized header names for consistency."
 
-    # The anchor gets its own report column already (added first, below) and never needs an old/new
-    # pair of its own: two rows only pair up when their anchors already compared equal under the
-    # same rule this loop uses, so that comparison can never show a difference. Dropped here, after
-    # the column-set and per-file anchor-presence checks above, so neither of those changes.
-    $previousHeadersNorm = @($previousHeadersNorm | Where-Object { $_ -ne $anchorNorm })
-    $currentHeadersNorm  = @($currentHeadersNorm  | Where-Object { $_ -ne $anchorNorm })
-
-    # Rows are fixed-width object[] in report-column order rather than PSCustomObject. Column names
-    # live once in $reportColumns (written as the header line) instead of on every row.
-    # object[] rather than string[] so an assigned $null stays $null (a string[] slot coerces it to "").
-    # Report columns: AnchorColumn, ChangeType, then old/new pairs for each other column
-    $reportColumns = [System.Collections.Generic.List[string]]::new(2 + (2 * $previousHeadersNorm.Count))
-    $reportColumns.Add($AnchorColumn)
-    $reportColumns.Add("ChangeType")
-    # $colIndex maps a column to the offset of its pair: old = i, new = i+1
-    $colIndex = @{}
-    foreach ($prop in $previousHeadersNorm) {
-        $colIndex[$prop] = $reportColumns.Count
-        $reportColumns.Add("old $($prop)")
-        $reportColumns.Add("new $($prop)")
+    # ChangeType name collision: single-file mode only, since split mode never writes this column.
+    # Compared after trim+lowercase, independent of -CaseSensitive, matching how duplicate headers are
+    # detected above. Never auto-renamed - a silently renamed column is a contract change no
+    # downstream process can detect.
+    if (-not $isSplit) {
+        $changeTypeNorm = $ChangeTypeColumnName.Trim().ToLowerInvariant()
+        $collidingColumn = $currentHeadersRaw | Where-Object { $_.Trim().ToLowerInvariant() -eq $changeTypeNorm } | Select-Object -First 1
+        if ($collidingColumn) {
+            throw "Current CSV column '$collidingColumn' collides with the ChangeType column name '$ChangeTypeColumnName'. Pass a different -ChangeTypeColumnName to resolve this."
+        }
     }
-    $rowWidth = $reportColumns.Count
 
-    # Pending-name-then-rename: rows are written here as they're produced, before the run is known
-    # to have produced any changes at all. Renamed to the real output name only if changes were
-    # found; discarded otherwise.
+    if ($NormalizeHeaderNames) {
+        Write-Host "Note: Output columns use trimmed and lowercase-normalized header names for consistency."
+    }
+
+    # Output columns: every column of Current, in Current's physical order, trim+lowercased only if
+    # -NormalizeHeaderNames. ChangeType is prepended in single-file mode only - it is an ordinary
+    # column, not hoisted or duplicated, so the anchor keeps its natural position among these.
+    $outputHeaderFields = [string[]]$(if ($NormalizeHeaderNames) { $currentHeadersRaw | ForEach-Object { $_.Trim().ToLowerInvariant() } } else { $currentHeadersRaw })
+    # -NormalizeHeaderNames normalizes names this script DERIVES, not names the caller supplied. The
+    # default 'ChangeType' is this script's own, so it normalizes along with the rest; a value passed
+    # explicitly is the caller's and is used exactly as given. That is the same "what you supplied is
+    # yours" rule that keeps Current's header names verbatim by default.
+    # Keyed on provenance, not value: under -NormalizeHeaderNames, passing -ChangeTypeColumnName
+    # ChangeType explicitly yields 'ChangeType', while omitting it yields 'changetype'.
+    $changeTypeHeader = if ($NormalizeHeaderNames -and -not $PSBoundParameters.ContainsKey('ChangeTypeColumnName')) {
+        $ChangeTypeColumnName.Trim().ToLowerInvariant()
+    } else {
+        $ChangeTypeColumnName
+    }
+    $changeTypeOffset = if ($isSplit) { 0 } else { 1 }
+    $outputWidth = $outputHeaderFields.Count + $changeTypeOffset
+    $outputColumns = [object[]]::new($outputWidth)
+    if (-not $isSplit) { $outputColumns[0] = $changeTypeHeader }
+    for ($i = 0; $i -lt $outputHeaderFields.Count; $i++) { $outputColumns[$i + $changeTypeOffset] = $outputHeaderFields[$i] }
+
+    # Previous -> output permutation map: position i (0-based, excluding ChangeType) holds the index
+    # into a Previous row for output column i. Built once from the two per-file normalized-header ->
+    # ordinal maps above. Used unconditionally by the delete path below - no fast path for the common
+    # case where both files already share a column order, since that is an extra branch for no
+    # measured gain.
+    $prevToOutputMap = [int[]]::new($outputHeaderFields.Count)
+    for ($i = 0; $i -lt $currentHeadersRaw.Count; $i++) {
+        $norm = $currentHeadersRaw[$i].Trim().ToLowerInvariant()
+        $prevToOutputMap[$i] = $prevHeaderIdx[$norm]
+    }
+
+    # Non-anchor normalized column names, walked on every Update/None comparison. The anchor is never
+    # compared - two rows only pair up because their anchors already compared equal under the same
+    # rule this loop uses, so that comparison could never show a difference.
+    $compareColumnsNorm = @($currNormAll | Where-Object { $_ -ne $anchorNorm })
+
+    # Pending-name-then-rename: rows are written here as they're produced. Unlike the rest of the
+    # family, this script always renames - see "always writes a file" in the header comment above.
     $pendingOutput = [System.IO.Path]::Combine($OutputFolder, ("{0}.{1}.pending.tmp" -f $baseFileName, $fileTime))
+    $pendingDeleteOutput = if ($isSplit) { [System.IO.Path]::Combine($OutputFolder, ("{0}.{1}.deletes.pending.tmp" -f $baseFileName, $fileTime)) } else { $null }
     $writer = New-Object System.IO.StreamWriter($pendingOutput, $false, $csvEncoding)
     $writer.NewLine = "`r`n"
-    $writer.WriteLine((ConvertTo-CsvLine -Fields $reportColumns -Delimiter $Delimiter))
+    $writer.WriteLine((ConvertTo-CsvLine -Fields $outputColumns -Delimiter $Delimiter))
+    $deleteWriter = $null
+    if ($isSplit) {
+        $deleteWriter = New-Object System.IO.StreamWriter($pendingDeleteOutput, $false, $csvEncoding)
+        $deleteWriter.NewLine = "`r`n"
+        $deleteWriter.WriteLine((ConvertTo-CsvLine -Fields $outputColumns -Delimiter $Delimiter))
+    }
     $emitted = 0
 
     # Summary counters
@@ -455,65 +617,47 @@ try {
                     Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Streaming Current... ($rowNum rows)"
                 }
 
-                $row = [object[]]::new($rowWidth)
-                $row[0] = $key
-                $row[1] = "None"
                 if ($previousLookup.ContainsKey($key))
                 {
                     $prevRow = $previousLookup[$key]
                     $isUpdate = $false
-                    foreach ($n in $previousHeadersNorm)
+                    foreach ($n in $compareColumnsNorm)
                     {
-                        $prevIdx = $prevHeaderIdx[$n]
-                        $currIdx = $currHeaderIdx[$n]
-
-                        $prevValue = $prevRow[$prevIdx]
-                        $currValue = $currRow[$currIdx]
-
+                        $prevValue = $prevRow[$prevHeaderIdx[$n]]
+                        $currValue = $currRow[$currHeaderIdx[$n]]
                         $valuesDiffer = if ($CaseSensitive) { $prevValue -cne $currValue } else { $prevValue -ine $currValue }
-
-                        if ($valuesDiffer)
-                        {
-                            # Only changed columns are populated; the rest stay $null and render as
-                            # empty unquoted fields, keeping a mostly-unchanged report small.
-                            $idx = $colIndex[$n]
-                            $row[$idx]     = $prevValue
-                            $row[$idx + 1] = $currValue
-                            $isUpdate = $true
-                        }
-                    }
-                    if ($isUpdate)
-                    {
-                        $row[1] = "Update"
-                        $updates++
-                    }
-                    else
-                    {
-                        $row[1] = "None"
-                        $nones++
+                        if ($valuesDiffer) { $isUpdate = $true; break }   # whole-row output needs no further column, only the verdict
                     }
                     # Matched: drop it from the lookup so what remains is the delete set, and so the
                     # lookup shrinks as the stream progresses.
                     [void]$previousLookup.Remove($key)
+                    if ($isUpdate)
+                    {
+                        $updates++
+                        $outRow = [object[]]::new($outputWidth)
+                        if (-not $isSplit) { $outRow[0] = "Update" }
+                        [Array]::Copy($currRow, 0, $outRow, $changeTypeOffset, $currRow.Length)
+                        $writer.WriteLine((ConvertTo-CsvLine -Fields $outRow -Delimiter $Delimiter))
+                        $emitted++
+                    }
+                    else
+                    {
+                        $nones++
+                    }
                 }
                 else
                 {
-                    $row[1] = "Add"
                     $adds++
-                    foreach ($n in $previousHeadersNorm)
-                    {
-                        $currIdx = $currHeaderIdx[$n]
-                        $idx = $colIndex[$n]
-                        $row[$idx]     = ""
-                        $row[$idx + 1] = $currRow[$currIdx]
-                    }
+                    $outRow = [object[]]::new($outputWidth)
+                    if (-not $isSplit) { $outRow[0] = "Add" }
+                    [Array]::Copy($currRow, 0, $outRow, $changeTypeOffset, $currRow.Length)
+                    $writer.WriteLine((ConvertTo-CsvLine -Fields $outRow -Delimiter $Delimiter))
+                    $emitted++
                 }
-                $writer.WriteLine((ConvertTo-CsvLine -Fields $row -Delimiter $Delimiter))
-                $emitted++
-                # No periodic Flush() here: this file is discarded outright on a crash or a no-changes
-                # run and never read while the script runs, so there is nothing a periodic flush would
-                # protect - StreamWriter's own internal buffer already bounds how much sits unwritten
-                # at any moment. Measured to make no runtime difference either way, so simplicity wins.
+                # No periodic Flush() here: this file is renamed unconditionally at the end and never
+                # read while the script runs, so there is nothing a periodic flush would protect -
+                # StreamWriter's own internal buffer already bounds how much sits unwritten at any
+                # moment. Measured to make no runtime difference either way, so simplicity wins.
             }
         } catch [Microsoft.VisualBasic.FileIO.MalformedLineException] {
             throw "Malformed CSV in '$currPath' at line $($parser.ErrorLineNumber). Unbalanced quotes are the usual cause. Line reads: $($parser.ErrorLine)"
@@ -533,25 +677,29 @@ try {
             Write-Host "WARNING: Duplicate anchor '$anchor' in Current file. Using row $($firstRowCurr[$anchor]); ignoring row(s): $rows. Pass -RejectDuplicateAnchors to fail the run on a duplicate instead." -ForegroundColor Yellow
         }
 
-        # 4. Whatever is left in the lookup was never seen in Current, so it was deleted.
+        # 4. Whatever is left in the lookup was never seen in Current, so it was deleted. Its values
+        # come from Previous, permuted into Current's column order via $prevToOutputMap.
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Status "Finalizing deletions..."
         $toDeleteTotal = $previousLookup.Count
         $iDel = 0
+        $deleteTargetWriter = if ($isSplit) { $deleteWriter } else { $writer }
         foreach ($key in $previousLookup.Keys)
         {
             $prevRow = $previousLookup[$key]
-            $row = [object[]]::new($rowWidth)
-            $row[0] = $key
-            $row[1] = "Delete"
             $deletes++
-            foreach ($n in $previousHeadersNorm)
+            $outRow = [object[]]::new($outputWidth)
+            if (-not $isSplit) { $outRow[0] = "Delete" }
+            if ($AnchorOnlyDeletes)
             {
-                $prevIdx = $prevHeaderIdx[$n]
-                $idx = $colIndex[$n]
-                $row[$idx]     = $prevRow[$prevIdx]
-                $row[$idx + 1] = ""
+                $outRow[$changeTypeOffset + $currAnchorIdx] = $prevRow[$prevAnchorIdx]
             }
-            $writer.WriteLine((ConvertTo-CsvLine -Fields $row -Delimiter $Delimiter))
+            else
+            {
+                for ($i = 0; $i -lt $outputHeaderFields.Count; $i++) {
+                    $outRow[$i + $changeTypeOffset] = $prevRow[$prevToOutputMap[$i]]
+                }
+            }
+            $deleteTargetWriter.WriteLine((ConvertTo-CsvLine -Fields $outRow -Delimiter $Delimiter))
             $emitted++
             $iDel++
             if (($iDel % 1000) -eq 0 -or $iDel -eq $toDeleteTotal) {
@@ -560,32 +708,86 @@ try {
             }
         }
 
-        # No sort, no batch write: rows already went to $pendingOutput as they were produced above.
-        # Only decision left is whether to keep the file or discard it.
-        # Explicit Flush() before Dispose() - not because Dispose() skips it, but because a failure
-        # here throws normally from this try block. The same failure inside Dispose(), called from
-        # finally below, could mask whatever exception the try block was already unwinding from.
+        # No sort, no batch write: rows already went to the pending file(s) as they were produced
+        # above. Explicit Flush() before Dispose() - not because Dispose() skips it, but because a
+        # failure here throws normally from this try block. The same failure inside Dispose(), called
+        # from finally below, could mask whatever exception the try block was already unwinding from.
         $writer.Flush()
         $writer.Dispose()
         $writer = $null
-        if (($adds + $updates + $deletes) -gt 0)
-        {
-            Move-Item -LiteralPath $pendingOutput -Destination $changesCSVFile -Force -ErrorAction Stop
-            Write-Host "Changes CSV written to: $changesCSVFile"
+        if ($isSplit) {
+            $deleteWriter.Flush()
+            $deleteWriter.Dispose()
+            $deleteWriter = $null
         }
-        else
-        {
-            Remove-Item -LiteralPath $pendingOutput -Force -ErrorAction SilentlyContinue
-            Write-Host "No changes detected; no CSV written"
+
+        # Always rename - this script has no "no changes, no file" path. A downstream job should not
+        # have to distinguish "no file" from "job failed", so even a zero-change run produces a
+        # header-only CSV.
+        # Re-check destinations here, not only at the top of the run. That check ran before parsing;
+        # this one catches a file that appeared while the comparison was running. It narrows the
+        # window - it cannot close it, since a rename can also fail for reasons no check predicts.
+        if (-not $Force) {
+            if (Test-Path -LiteralPath $mainOutputPath) {
+                throw "Output file already exists: $mainOutputPath. Pass -Force to overwrite it."
+            }
+            if ($isSplit -and (Test-Path -LiteralPath $deleteOutputPath)) {
+                throw "Output file already exists: $deleteOutputPath. Pass -Force to overwrite it."
+            }
+        }
+
+        if ($isSplit) {
+            # A split run produces a PAIR that a provisioning pipeline consumes together. A main file
+            # present without its delete file means adds/updates are applied while deprovisioning
+            # silently is not - the exact failure this script's "deletes are non-negotiable" design
+            # exists to prevent. So a half-completed rename must leave NO output rather than half of
+            # it: nothing is unambiguous, half is not. This deliberately differs from the rest of the
+            # family, which renames a single file and has no pair to keep consistent.
+            #
+            # Deletes are renamed FIRST on purpose. If the undo below ever fails too, the residue is
+            # an orphaned delete file and no main file, which reads as an incomplete run - the safe
+            # direction to fail in.
+            if ($Force) {
+                Move-Item -LiteralPath $pendingDeleteOutput -Destination $deleteOutputPath -Force -ErrorAction Stop
+            } else {
+                Move-Item -LiteralPath $pendingDeleteOutput -Destination $deleteOutputPath -ErrorAction Stop
+            }
+            try {
+                if ($Force) {
+                    Move-Item -LiteralPath $pendingOutput -Destination $mainOutputPath -Force -ErrorAction Stop
+                } else {
+                    Move-Item -LiteralPath $pendingOutput -Destination $mainOutputPath -ErrorAction Stop
+                }
+            } catch {
+                # Undo the rename that did succeed, and drop the pending file that did not, so the
+                # output folder is left exactly as it was found.
+                Remove-Item -LiteralPath $deleteOutputPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $pendingOutput -Force -ErrorAction SilentlyContinue
+                throw "Failed to write '$mainOutputPath': $($_.Exception.Message) The delete file that had already been written was removed, so this run left no output - a main file without its matching delete file would silently drop deprovisioning work downstream."
+            }
+        } else {
+            if ($Force) {
+                Move-Item -LiteralPath $pendingOutput -Destination $mainOutputPath -Force -ErrorAction Stop
+            } else {
+                Move-Item -LiteralPath $pendingOutput -Destination $mainOutputPath -ErrorAction Stop
+            }
+        }
+        Write-Host "Delta CSV written to: $mainOutputPath"
+        if ($isSplit) {
+            Write-Host "Delta deletes CSV written to: $deleteOutputPath"
         }
     }
     finally {
         if ($writer) { $writer.Dispose() }
+        if ($deleteWriter) { $deleteWriter.Dispose() }
         # Always clear progress
         Write-Progress -Id $progressId -Activity "Compare CSVs" -Completed
     }
-    # Summary output ($nones is counted in the compare loop, not recounted here)
-    Write-Host ("Summary: Adds={0}, Updates={1}, Deletes={2}, Unchanged={3}" -f $adds, $updates, $deletes, $nones)
+    # Summary output ($nones is counted in the compare loop, not recounted here). Total is every
+    # distinct anchor seen across both files - Unchanged is reported despite never being emitted,
+    # since it is the number that tells an operator how much work this delta saved.
+    $total = $adds + $updates + $deletes + $nones
+    Write-Host ("Summary: Adds={0}, Updates={1}, Deletes={2}, Unchanged={3}, Total={4}" -f $adds, $updates, $deletes, $nones, $total)
 
     $elapsed = (Get-Date) - $scriptStartTime
     # Floor, not [int]: [int] rounds to nearest, so a 47.7s run reported "1m 47s"

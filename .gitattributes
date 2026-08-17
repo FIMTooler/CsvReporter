@@ -1,0 +1,21 @@
+# Line endings are part of this repo's contract, not a local preference. Without these rules the
+# cloning machine's core.autocrlf decides, and both file-convention invariants break in opposite
+# directions - silently, because the test suite still passes with a converted fixture.
+
+# Every .ps1 must arrive CRLF on every platform. docs/STATUS.md states this as an invariant.
+*.ps1 text eol=crlf
+
+# Fixtures are byte-exact test data. tests/fixtures/newlines/ is deliberately LF-only and its
+# embedded newline is the thing under test; any conversion destroys the coverage. -text disables
+# EOL translation entirely while still diffing as text.
+tests/fixtures/** -text
+
+# Baselines (TEST-PLAN.md Group D) are byte-exact recordings of real script output - CRLF because
+# the scripts themselves always write CRLF. Same reasoning as tests/fixtures/** above: without
+# -text, a clone under a different core.autocrlf could silently convert them, and the comparison
+# that reads them is byte/hash-based, not EOL-tolerant.
+tests/baselines/** -text
+
+# Docs are LF.
+*.md text eol=lf
+.gitattributes text eol=lf

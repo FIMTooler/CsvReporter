@@ -1,0 +1,6 @@
+﻿ID,Name,Status,HireDate,Notes,Dept
+1,Alice,Active,01/15/2020,"Says ""hello""",HR
+2,Bob,Inactive,03/22/2019,"Line1
+Line2",IT
+3,Cleément,Active,07/04/2021,"a,b,c",HR
+4,Dave,Active,12/31/2018,plain,IT

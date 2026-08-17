@@ -1,0 +1,5 @@
+﻿"ID","ChangeType","old alpha","new alpha","old beta","new beta","old gamma","new gamma"
+"1","None",,,,,,
+"2","Update",,,"beta2","beta2X",,
+"4","Add","","alpha4","","beta4","","gamma4"
+"3","Delete","alpha3","","beta3","","gamma3",""

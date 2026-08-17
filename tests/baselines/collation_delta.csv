@@ -1,0 +1,5 @@
+﻿"ChangeType","ID","Name","Dept"
+"Update","A-1","Alice","FINANCE"
+"Add","B-10","Ben","IT"
+"Update","b-2","Beatrice","FIN"
+"Delete","b-1","Bob","IT"

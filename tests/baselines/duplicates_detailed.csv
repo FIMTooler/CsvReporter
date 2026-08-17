@@ -1,0 +1,5 @@
+﻿"ID","ChangeType","old x","new x","match x","old y","new y","match y"
+"SUMMARY","---","","","1 of 3 FALSE","","","0 of 3 FALSE"
+"1","None","FIRST","FIRST","True","p","p","True"
+"2","Update","keep","CHANGED","False","r","r","True"
+"3","None","solo","solo","True","s","s","True"

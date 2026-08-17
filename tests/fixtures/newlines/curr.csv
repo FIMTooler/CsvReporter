@@ -1,0 +1,6 @@
+﻿ID,Name,Status,HireDate,Notes,Dept
+1,Alice,1,2020-01-15,"Says ""hello""",HR
+2,Robert,0,2019-03-22,"Line1
+Line2",IT
+5,Eve,1,2022-06-01,new,HR
+4,Dave,1,2018-12-31,plain,ITX

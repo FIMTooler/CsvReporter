@@ -1,0 +1,5 @@
+﻿"ID","ChangeType","old a","new a","old b","new b"
+"1","Update",,,"y","CHANGED"
+"2","None",,,,
+"3","Delete","m","","n",""
+"4","Add","","e","","f"

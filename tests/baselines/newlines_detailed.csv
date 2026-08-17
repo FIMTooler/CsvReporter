@@ -1,0 +1,9 @@
+﻿"ID","ChangeType","old dept","new dept","match dept","old hiredate","new hiredate","match hiredate","old name","new name","match name","old notes","new notes","match notes","old status","new status","match status"
+"SUMMARY","---","","","1 of 3 FALSE","","","3 of 3 FALSE","","","1 of 3 FALSE","","","0 of 3 FALSE","","","3 of 3 FALSE"
+"1","Update","HR","HR","True","01/15/2020","2020-01-15","False","Alice","Alice","True","Says ""hello""","Says ""hello""","True","Active","1","False"
+"2","Update","IT","IT","True","03/22/2019","2019-03-22","False","Bob","Robert","False","Line1
+Line2","Line1
+Line2","True","Inactive","0","False"
+"3","Delete","HR","",,"07/04/2021","",,"Cleément","",,"a,b,c","",,"Active","",
+"4","Update","IT","ITX","False","12/31/2018","2018-12-31","False","Dave","Dave","True","plain","plain","True","Active","1","False"
+"5","Add","","HR",,"","2022-06-01",,"","Eve",,"","new",,"","1",

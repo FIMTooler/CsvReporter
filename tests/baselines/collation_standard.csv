@@ -1,0 +1,7 @@
+﻿"ID","ChangeType","old dept","new dept","old name","new name"
+"A-1","Update","HR","FINANCE",,
+"a_1","None",,,,
+"b-1","Delete","IT","","Bob",""
+"B-10","Add","","IT","","Ben"
+"b-2","Update",,,"Bea","Beatrice"
+"_z","None",,,,

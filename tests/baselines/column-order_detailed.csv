@@ -1,0 +1,6 @@
+﻿"ID","ChangeType","old alpha","new alpha","match alpha","old beta","new beta","match beta","old gamma","new gamma","match gamma"
+"SUMMARY","---","","","0 of 2 FALSE","","","1 of 2 FALSE","","","0 of 2 FALSE"
+"1","None","alpha1","alpha1","True","beta1","beta1","True","gamma1","gamma1","True"
+"2","Update","alpha2","alpha2","True","beta2","beta2X","False","gamma2","gamma2","True"
+"4","Add","","alpha4",,"","beta4",,"","gamma4",
+"3","Delete","alpha3","",,"beta3","",,"gamma3","",

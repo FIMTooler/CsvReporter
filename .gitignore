@@ -1,0 +1,17 @@
+# harness scratch - recreated on every run
+tests/_work/
+
+# deterministic output of tests/New-LargeFixture.ps1 (~8.5 MB); regenerate rather than commit
+tests/fixtures/large-generated/
+
+# wider fixture for AgentNotes/Measure-Profile.ps1; sized by whoever generates it, regenerate rather than commit
+tests/fixtures/profile-generated*/
+
+# Agent-operational material: internal docs, benchmark logs, and the maintainer-only tooling.
+# This repo is public and these are written for the maintainer and for agents, not for the README's
+# reader. They stay in the working tree at stable paths but are never published.
+AgentNotes/
+
+# The agent anchor. Gitignored for the same reason as AgentNotes/ - a published anchor whose routing
+# table points into an unpublished directory would hand every clone a map of dead pointers.
+CLAUDE.md

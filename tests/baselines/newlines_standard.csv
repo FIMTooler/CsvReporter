@@ -1,0 +1,6 @@
+﻿"ID","ChangeType","old dept","new dept","old hiredate","new hiredate","old name","new name","old notes","new notes","old status","new status"
+"1","Update",,,"01/15/2020","2020-01-15",,,,,"Active","1"
+"2","Update",,,"03/22/2019","2019-03-22","Bob","Robert",,,"Inactive","0"
+"3","Delete","HR","","07/04/2021","","Cleément","","a,b,c","","Active",""
+"4","Update","IT","ITX","12/31/2018","2018-12-31",,,,,"Active","1"
+"5","Add","","HR","","2022-06-01","","Eve","","new","","1"

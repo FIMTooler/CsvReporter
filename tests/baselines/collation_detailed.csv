@@ -1,0 +1,8 @@
+﻿"ID","ChangeType","old dept","new dept","match dept","old name","new name","match name"
+"SUMMARY","---","","","1 of 4 FALSE","","","1 of 4 FALSE"
+"A-1","Update","HR","FINANCE","False","Alice","Alice","True"
+"a_1","None","HR","HR","True","Ann","Ann","True"
+"b-1","Delete","IT","",,"Bob","",
+"B-10","Add","","IT",,"","Ben",
+"b-2","Update","FIN","FIN","True","Bea","Beatrice","False"
+"_z","None","OPS","OPS","True","Zed","Zed","True"
