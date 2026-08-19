@@ -32,7 +32,7 @@ Path to the "Previous" CSV file.
 Path to the "Current" CSV file.
 
 .PARAMETER AnchorColumn
-Header name of the key/anchor column used to join rows.
+Header name of the anchor column used to join rows.
 
 .PARAMETER OutputFolder
 Folder where the changes CSV will be written. Run files and the in-progress output file are also
