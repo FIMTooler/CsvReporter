@@ -27,12 +27,24 @@ Four modes:
                     runtime, so a second version re-confirms an architectural property rather than
                     testing anything new, and would need its own baseline process. Profiling memory
                     across both versions is a separate exercise, not this check.
-  -Mode Core        TEST-PLAN.md cases with no better-fitting mode, on PS 5.1 and 7: a 0-byte
+  -Mode Core        Specific cases with no better-fitting mode, on PS 5.1 and 7: a 0-byte
                     Previous/Current file (C1); a single-data-row fixture on both sides (C3);
                     CompareCSVs_Detailed.ps1's -ValueTransforms, -DateFormats and -IgnoreColumns
-                    against the newlines\ fixture (C4-C6); and a path decorated with wildcard
+                    against the newlines\ fixture (C4-C6); a path decorated with wildcard
                     metacharacters or non-ASCII characters, compared byte-identical against an
-                    undecorated run (E1/E2).
+                    undecorated run (E1/E2); -CaseSensitive changing anchor identity and value
+                    comparison, against the casing\ fixture (A1); a BOM-less legacy export
+                    decoding correctly under -EncodingName ansi but not under the default, against the
+                    encoding\ fixture (A2); large's multi-pass merge forced by a small -BatchSize,
+                    against the merge-passes\ fixture (A4); -RejectDuplicateAnchors turning a
+                    duplicate anchor from a warning into a rejection naming the right side, against the
+                    duplicates\ fixture and an ad-hoc Current-only-duplicate variant (A5); CRLF and
+                    LF input carrying identical content producing identical output, against the
+                    terminators\ fixture (A7); a genuine change inside an embedded multi-line
+                    quoted value being detected rather than silently absorbed, against the
+                    newline-diff\ fixture (A8); a non-comma delimiter plumbing through correctly,
+                    against the delimiters\ fixture (A3); and empty/whitespace values in the core
+                    comparison and each shape's own output, against the empty-values\ fixture (A6).
 
 Every mode prints PASS/FAIL per check, ends with a RESULT line, and exits non-zero if any check
 failed.
@@ -413,7 +425,7 @@ elseif ($Mode -eq 'Malformed') {
     # Verified 2026-08-06: searching 'Exception:' passes all three throw cases on 7 and fails all
     # four on 5.1. That divergence is invisible if only one version is run.
     #
-    # TEST-PLAN.md Group B: every case above always passes the malformed fixture as Previous with
+    # Group B: every case above always passes the malformed fixture as Previous with
     # good.csv as Current, so only the Previous validation branch has ever executed. These four
     # reuse the same fixtures with the roles reversed, and assert that the message actually names
     # the Current side rather than just that some error fired - "an error occurred" would not catch
@@ -422,7 +434,7 @@ elseif ($Mode -eq 'Malformed') {
     # uses (Resolve-Path -LiteralPath ... .ProviderPath inside Resolve-FullPath), so the assertion
     # compares against what the script actually produces, not the raw Join-Path string.
     $badQuotesResolved = (Resolve-Path -LiteralPath (Join-Path $bad 'bad_quotes.csv')).ProviderPath
-    # dup_anchor has no ExpectFile: TEST-PLAN.md's B4 only specifies the warning message, unlike
+    # dup_anchor has no ExpectFile: B4 only specifies the warning message, unlike
     # B1-B3 which explicitly require no report written. Whether a report is written here is
     # incidental to what B4 tests - dup_anchor.csv deduplicates (first-occurrence-wins) to the exact
     # same two records good.csv already holds, so there is genuinely zero net difference, and
@@ -435,15 +447,15 @@ elseif ($Mode -eq 'Malformed') {
         @{ Case = 'bad_quotes'; Pattern = [regex]::Escape("Malformed CSV in '$badQuotesResolved' at line 3"); ExpectFile = $false }
         @{ Case = 'dup_anchor'; Pattern = "Duplicate anchor '1' in Current file\. Using row 1; ignoring row\(s\): 2"; ExpectFile = $null }
     )
-    # TEST-PLAN.md E3: three ways a path guard should reject at parameter binding rather than let a
+    # E3: three ways a path guard should reject at parameter binding rather than let a
     # bad path reach the comparison - non-zero exit, no report written, and the message names the
     # offending parameter. B7 (fixed 2026-08-07, all five scripts) closed Test-Path -Path silently
     # rejecting real files with [ or ] in their name; nothing has asserted the guard's basic
-    # reject-shape stays intact until now. "Both directions" in TEST-PLAN.md's Group E means
+    # reject-shape stays intact until now. "Both directions" for Group E means
     # accept-a-decorated-path (E1/E2, under -Mode Core) versus reject-an-invalid-one (E3, here) - not
     # Previous-versus-Current, so each sub-case below exercises one side only.
     # Exit code is asserted explicitly here via $LASTEXITCODE, unlike the message-only checks above -
-    # TEST-PLAN.md's E3 wording calls out "non-zero exit" as its own assertion, distinct from the
+    # E3's original wording calls out "non-zero exit" as its own assertion, distinct from the
     # message text.
     $missingInputFile = Join-Path $work 'e3_missing_input.csv'
     $e3PathCases = @(
@@ -553,7 +565,7 @@ elseif ($Mode -eq 'Malformed') {
     }
 }
 elseif ($Mode -eq 'Core') {
-    # TEST-PLAN.md C1: a 0-byte file as Previous/Current throws the empty-file message naming the
+    # C1: a 0-byte file as Previous/Current throws the empty-file message naming the
     # right side, and writes no report. Generated into $work rather than committed to
     # tests\fixtures\ - trivial to create, and an empty file sitting in the repo reads oddly on its
     # own. C1's own spec also includes a header-only file still throwing the DISTINCT
@@ -589,8 +601,9 @@ elseif ($Mode -eq 'Core') {
         }
     }
 
-    # TEST-PLAN.md C3: guards the `return ,$rows` single-element-array-unrolling trap
-    # (ENGINEERING-NOTES.md Part 2 section G) - a report must still be produced, with exactly one
+    # C3: guards the `return ,$rows` single-element-array-unrolling trap - PowerShell unwraps a
+    # single-element array return value to a scalar unless the leading comma forces it to stay an
+    # array. A report must still be produced, with exactly one
     # data row, when each side holds exactly one. single-row\ has one row per side differing in one
     # column, so the report also proves the comparison itself ran, not just that nothing crashed.
     # SUMMARY-row exclusion only matters for Detailed; a harmless no-op for the other four.
@@ -704,15 +717,15 @@ elseif ($Mode -eq 'Core') {
 
     }
 
-    # TEST-PLAN.md E1/E2: a path decorated with wildcard metacharacters (E1) or non-ASCII characters
+    # E1/E2: a path decorated with wildcard metacharacters (E1) or non-ASCII characters
     # (E2) must be accepted and produce byte-identical output to the same fixture run from an
     # undecorated path - proving the decoration reaches neither the comparison nor the output. B7
     # (fixed 2026-08-07, all five scripts) closed Test-Path -Path treating [ and ] as wildcards and
     # silently rejecting real files; nothing has asserted the fix stays intact until now.
     #
-    # Both prev.csv/curr.csv AND -OutputFolder are decorated, per TEST-PLAN.md's wording. large.ps1
-    # stays in the loop deliberately - it also spools run files into -OutputFolder mid-run
-    # (DECISIONS.md #8), giving a path defect more surface there than in the other four.
+    # Both prev.csv/curr.csv AND -OutputFolder are decorated. large.ps1
+    # stays in the loop deliberately - it also spools run files into -OutputFolder mid-run,
+    # giving a path defect more surface there than in the other four.
     #
     # Get-ChildItem -LiteralPath, not the -Path pattern the rest of this file uses (Invoke-One,
     # Clear-Dir, every inline "did it write a file" check) - confirmed 2026-08-20 that -Path silently
@@ -734,7 +747,7 @@ elseif ($Mode -eq 'Core') {
         Assert-Check 'sparse fixture present' $false "expected prev.csv/curr.csv under $sparseDir"
     } else {
         # E2's accented character is built from a char code, not typed literally - every .ps1 in this
-        # repo must stay pure ASCII (STATUS.md), and $() around the backtick-escaped $ in E1's suffix
+        # repo must stay pure ASCII, and $() around the backtick-escaped $ in E1's suffix
         # keeps that string literal too (no expansion, no non-ASCII byte in source either way).
         $decorations = @(
             @{ Group = 'E1'; Suffix = "[b] `$d 'q'" }
@@ -771,6 +784,585 @@ elseif ($Mode -eq 'Core') {
                     $ok = ($exitCode -eq 0 -and $decoHash -ne 'NOFILE' -and $decoHash -eq $ctrlHash)
                     Assert-Check "$($d.Group):$s PS$($v[0])" $ok "exit=$exitCode deco=$decoHash ctrl=$ctrlHash"
                 }
+            }
+        }
+    }
+
+    # A1: -CaseSensitive changes both anchor identity and value comparison - one
+    # comparer choice (Ordinal under -CaseSensitive, OrdinalIgnoreCase by default) drives dictionary
+    # identity, the sort, and (in large) the merge-join. A regression silently merges or splits
+    # records. Re-verified against the real scripts 2026-08-20 rather than trusting the case's
+    # original 2026-08-04 exact-output text: that text predates G11/G12 removing small/medium's
+    # anchor sort, so the row ORDER it shows no longer holds (large still sorts and does still show
+    # that order). The row counts, warning counts and per-anchor content it describes still do, and
+    # are what is asserted below - by anchor lookup via Import-Csv, not line position, so a
+    # legitimate reorder can never be mistaken for a regression.
+    "=== A1: -CaseSensitive ==="
+    # Scoped to four scripts, matching how this case was originally specified; whether Delta joins
+    # Group A is a separate decision, not made here.
+    $groupAScripts = @($Scripts | Where-Object { $_ -ne 'Delta' })
+    $casingDir = Join-Path $FixtureFolder 'casing'
+    $casingPrev = Join-Path $casingDir 'prev.csv'; $casingCurr = Join-Path $casingDir 'curr.csv'
+    if (-not (Test-Path $casingPrev) -or -not (Test-Path $casingCurr)) {
+        Assert-Check 'casing fixture present' $false "expected prev.csv/curr.csv under $casingDir"
+    } else {
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $stdShapeOut = @{}   # "<script><label>" -> report path, PS7 only, for the cross-script check below
+            foreach ($cs in @($false, $true)) {
+                $label = if ($cs) { 'cs' } else { 'default' }
+                foreach ($s in $groupAScripts) {
+                    $out = Join-Path $work ("a1_{0}_{1}_{2}" -f $s,$label,$v[0])
+                    Clear-Dir $out
+                    $scriptArgs = @('-PreviousCSVFile',$casingPrev,'-CurrentCSVFile',$casingCurr,'-AnchorColumn','ID','-OutputFolder',$out)
+                    if ($cs) { $scriptArgs += '-CaseSensitive' }
+                    $r = & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") @scriptArgs *>&1
+                    $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if (-not $f) { Assert-Check "A1:$s $label PS$($v[0]) report written" $false; continue }
+                    if ($v[0] -eq '7' -and $s -in @('small','medium','large')) { $stdShapeOut["$s$label"] = $f.FullName }
+
+                    # Joined/whitespace-collapsed before matching - PS5.1 can wrap a long message
+                    # across several captured output objects (see the E3/Group B notes above), and
+                    # -RejectDuplicateAnchors' own suffix sentence makes this one long enough to risk it.
+                    $joined = (($r -join ' ') -replace '\s+', ' ').Trim()
+                    $warnPrev = ([regex]::Matches($joined, "Duplicate anchor 'ABC' in Previous file")).Count
+                    $warnCurr = ([regex]::Matches($joined, "Duplicate anchor 'ABC' in Current file")).Count
+                    $expectWarn = if ($cs) { 0 } else { 1 }
+                    Assert-Check "A1:$s $label PS$($v[0]) warnings (Previous/Current)" ($warnPrev -eq $expectWarn -and $warnCurr -eq $expectWarn) "Previous=$warnPrev Current=$warnCurr"
+
+                    $rows = @(Import-Csv -LiteralPath $f.FullName | Where-Object { $_.ID -ne 'SUMMARY' })
+                    $expectRows = if ($cs) { 3 } else { 2 }
+                    Assert-Check "A1:$s $label PS$($v[0]) row count" ($rows.Count -eq $expectRows) "expected $expectRows found $($rows.Count) - if this does not change between default/cs, -CaseSensitive is not reaching the comparer"
+
+                    if (-not $cs) {
+                        $abc = @($rows | Where-Object { $_.ID -ceq 'abc' })
+                        Assert-Check "A1:$s default PS$($v[0]) abc/ABC merge, unchanged" `
+                            ($abc.Count -eq 1 -and $abc[0].ChangeType -eq 'None') "found $($abc.Count) row(s), ChangeType=$($abc[0].ChangeType)"
+                    } else {
+                        $abc = @($rows | Where-Object { $_.ID -ceq 'abc' })
+                        $ABCrow = @($rows | Where-Object { $_.ID -ceq 'ABC' })
+                        Assert-Check "A1:$s cs PS$($v[0]) abc Update (active->ACTIVE)" `
+                            ($abc.Count -eq 1 -and $abc[0].ChangeType -eq 'Update' -and $abc[0].'old status' -ceq 'active' -and $abc[0].'new status' -ceq 'ACTIVE') `
+                            "ChangeType=$($abc[0].ChangeType) old=$($abc[0].'old status') new=$($abc[0].'new status')"
+                        Assert-Check "A1:$s cs PS$($v[0]) ABC its own record, unchanged" `
+                            ($ABCrow.Count -eq 1 -and $ABCrow[0].ChangeType -eq 'None') "found $($ABCrow.Count) row(s), ChangeType=$($ABCrow[0].ChangeType)"
+                    }
+                    $xyz = @($rows | Where-Object { $_.ID -ceq 'xyz' })
+                    Assert-Check "A1:$s $label PS$($v[0]) xyz Update (Active->CHANGED)" `
+                        ($xyz.Count -eq 1 -and $xyz[0].ChangeType -eq 'Update' -and $xyz[0].'old status' -ceq 'Active' -and $xyz[0].'new status' -ceq 'CHANGED') `
+                        "ChangeType=$($xyz[0].ChangeType) old=$($xyz[0].'old status') new=$($xyz[0].'new status')"
+                }
+            }
+            # Order-insensitive on purpose: large still sorts, small/medium don't
+            # (G11/G12), so a raw byte comparison would flag a legitimate ordering difference as a
+            # regression. Reuses the same helper the Agreement-mode baseline checks already use.
+            if ($v[0] -eq '7') {
+                foreach ($label in @('default','cs')) {
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'medium') {
+                        Test-ContentEqual "A1:small == medium ($label)" $stdShapeOut["small$label"] $stdShapeOut["medium$label"] 1
+                    }
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'large') {
+                        Test-ContentEqual "A1:small == large ($label)" $stdShapeOut["small$label"] $stdShapeOut["large$label"] 1
+                    }
+                }
+            }
+        }
+    }
+
+    # A2: a BOM-less legacy export decoded as UTF-8 (the default) turns non-ASCII into
+    # the Unicode replacement character, which surfaces as a SPURIOUS difference, never as an error -
+    # the trap README.md warns operators about. -EncodingName ansi decodes it correctly instead.
+    # Re-verified against the real scripts 2026-08-20, same discipline as A1 - the case's original
+    # 2026-08-04 text has the same field-count mismatch A1's did, though its ChangeType claims hold.
+    #
+    # -EncodingName also governs OUTPUT encoding, not just input decoding (README's own "Writing"
+    # note; same $csvEncoding variable feeds both the readers and the StreamWriter in every script,
+    # confirmed by reading the bytes directly) - so the ansi-mode report is itself BOM-less
+    # Windows-1252, not UTF-8. Import-Csv defaults a BOM-less file to UTF-8 regardless of the system
+    # code page, so reading it back needs an explicit -Encoding match or it would show a replacement
+    # character even where the script wrote the correct byte - a read-path mismatch, not a script
+    # defect. This Import-Csv always runs in the outer host, which #Requires -Version 7 pins to PS7
+    # regardless of which runtime (pwsh or powershell.exe) produced the file being read - so the fix
+    # is the same for both loop iterations, not one per $v. PS7's Import-Csv -Encoding accepts a
+    # numeric code page directly (PS6.2+). $ansiCodePage mirrors Get-AnsiCodePage's own fallback so
+    # the harness's own decode can never disagree with what the script under test actually used.
+    "=== A2: -EncodingName ansi ==="
+    $encodingDir = Join-Path $FixtureFolder 'encoding'
+    $encPrev = Join-Path $encodingDir 'prev_ansi.csv'; $encCurr = Join-Path $encodingDir 'curr_utf8.csv'
+    if (-not (Test-Path $encPrev) -or -not (Test-Path $encCurr)) {
+        Assert-Check 'encoding fixture present' $false "expected prev_ansi.csv/curr_utf8.csv under $encodingDir"
+    } else {
+        # Built from char codes, not typed literally, to keep this file pure ASCII - same technique
+        # the E2 decoration case above already uses for its own accented character.
+        $cafeUtf8 = "Caf$([char]0xE9)"
+        $cafeCorrupted = "Caf$([char]0xFFFD)"
+        $ansiCodePage = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+        if ($ansiCodePage -le 0) { $ansiCodePage = 65001 }
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $stdShapeOut = @{}
+            foreach ($ansi in @($false, $true)) {
+                $label = if ($ansi) { 'ansi' } else { 'default' }
+                foreach ($s in $groupAScripts) {
+                    $out = Join-Path $work ("a2_{0}_{1}_{2}" -f $s,$label,$v[0])
+                    Clear-Dir $out
+                    $scriptArgs = @('-PreviousCSVFile',$encPrev,'-CurrentCSVFile',$encCurr,'-AnchorColumn','ID','-OutputFolder',$out)
+                    if ($ansi) { $scriptArgs += @('-EncodingName','ansi') }
+                    & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") @scriptArgs *>&1 | Out-Null
+                    $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if (-not $f) { Assert-Check "A2:$s $label PS$($v[0]) report written" $false; continue }
+                    if ($v[0] -eq '7' -and $s -in @('small','medium','large')) { $stdShapeOut["$s$label"] = $f.FullName }
+
+                    $importArgs = @{ LiteralPath = $f.FullName }
+                    if ($ansi) { $importArgs['Encoding'] = $ansiCodePage }
+                    $rows = Import-Csv @importArgs
+                    $row1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $row2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $expect1 = if ($ansi) { 'None' } else { 'Update' }
+                    Assert-Check "A2:$s $label PS$($v[0]) ID=1 ChangeType" ($row1.Count -eq 1 -and $row1[0].ChangeType -eq $expect1) "expected $expect1 found $($row1[0].ChangeType)"
+                    Assert-Check "A2:$s $label PS$($v[0]) ID=2 Update (ASCII-only control)" ($row2.Count -eq 1 -and $row2[0].ChangeType -eq 'Update') "found $($row2[0].ChangeType)"
+
+                    if (-not $ansi) {
+                        Assert-Check "A2:$s default PS$($v[0]) old name shows replacement character" ($row1[0].'old name' -eq $cafeCorrupted) "found '$($row1[0].'old name')'"
+                        Assert-Check "A2:$s default PS$($v[0]) new name decodes correctly" ($row1[0].'new name' -ceq $cafeUtf8) "found '$($row1[0].'new name')'"
+                    }
+                    if ($s -eq 'Detailed') {
+                        $expectMatch = if ($ansi) { 'True' } else { 'False' }
+                        Assert-Check "A2:Detailed $label PS$($v[0]) match name" ($row1[0].'match name' -eq $expectMatch) "expected $expectMatch found $($row1[0].'match name')"
+                        if ($ansi) {
+                            # Detailed always populates value cells regardless of ChangeType (unlike
+                            # the standard shape, which blanks an unchanged column) - the only place
+                            # in this case an ansi-mode accented value is actually there to check.
+                            Assert-Check "A2:Detailed ansi PS$($v[0]) old name decodes correctly" ($row1[0].'old name' -ceq $cafeUtf8) "found '$($row1[0].'old name')'"
+                            Assert-Check "A2:Detailed ansi PS$($v[0]) new name decodes correctly" ($row1[0].'new name' -ceq $cafeUtf8) "found '$($row1[0].'new name')'"
+                        }
+                    }
+                }
+            }
+            if ($v[0] -eq '7') {
+                foreach ($label in @('default','ansi')) {
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'medium') {
+                        Test-ContentEqual "A2:small == medium ($label)" $stdShapeOut["small$label"] $stdShapeOut["medium$label"] 1
+                    }
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'large') {
+                        Test-ContentEqual "A2:small == large ($label)" $stdShapeOut["small$label"] $stdShapeOut["large$label"] 1
+                    }
+                }
+            }
+        }
+    }
+
+    # A4: large's multi-pass merge - Merge-Runs merges run files in several passes when
+    # their count exceeds $maxFanIn (32 in CompareCSVs_large.ps1 at the time of writing - read the
+    # constant rather than trusting this number). At the default -BatchSize (25000) a 20K-row input
+    # produces just 1 run, so this code path never executes against any other fixture this suite runs.
+    # merge-passes\ has 40 data rows: -BatchSize 1 produces 40 run files, exceeding the fan-in of 32
+    # and forcing a second merge pass; -BatchSize 2 produces 20 (still several run files, single
+    # pass); -BatchSize 1000 produces 1 (no merge at all) - the same input exercised three ways.
+    # Re-verified against the real scripts 2026-08-20, same discipline as A1/A2: this case's original
+    # 2026-08-04 text asserted "large byte-identical to small" at every batch size, which predates
+    # G11/G12 (2026-08-14) removing small's anchor sort. A real run now shows large self-consistent
+    # (identical bytes) across all three batch sizes - it is the only one of the family that still
+    # sorts, so its own output does not vary by batch size - but only
+    # CONTENT-equal (order-insensitive) to small, not byte-identical, since small's row order is no
+    # longer guaranteed to match large's.
+    "=== A4: large multi-pass merge ==="
+    $mergePassesDir = Join-Path $FixtureFolder 'merge-passes'
+    $mpPrev = Join-Path $mergePassesDir 'prev.csv'; $mpCurr = Join-Path $mergePassesDir 'curr.csv'
+    if (-not (Test-Path $mpPrev) -or -not (Test-Path $mpCurr)) {
+        Assert-Check 'merge-passes fixture present' $false "expected prev.csv/curr.csv under $mergePassesDir"
+    } else {
+        $largeOut7 = @{}   # batch size -> PS7 report path, for the content-vs-small check below.
+                            # Declared once, outside the version loop, since small is only run once
+                            # (PS7), matching how this case was originally specified.
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $largeHash = @{}   # batch size -> hash, for the cross-batch-size self-consistency check
+            foreach ($bs in 1,2,1000) {
+                $out = Join-Path $work ("a4_large_bs{0}_{1}" -f $bs,$v[0])
+                Clear-Dir $out
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder 'CompareCSVs_large.ps1') `
+                    -PreviousCSVFile $mpPrev -CurrentCSVFile $mpCurr -AnchorColumn ID -OutputFolder $out -BatchSize $bs *>&1 | Out-Null
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A4:large BatchSize=$bs PS$($v[0]) report written" $false; continue }
+                $largeHash[$bs] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+                if ($v[0] -eq '7') { $largeOut7[$bs] = $f.FullName }
+
+                $tmpCount = (Get-ChildItem -Path $out -Filter '*.tmp' -ErrorAction SilentlyContinue).Count
+                Assert-Check "A4:large BatchSize=$bs PS$($v[0]) zero tmp files remain" ($tmpCount -eq 0) "found $tmpCount"
+
+                $rows = Import-Csv -LiteralPath $f.FullName
+                $adds = @($rows | Where-Object ChangeType -eq 'Add').Count
+                $updates = @($rows | Where-Object ChangeType -eq 'Update').Count
+                $deletes = @($rows | Where-Object ChangeType -eq 'Delete').Count
+                $none = @($rows | Where-Object ChangeType -eq 'None').Count
+                Assert-Check "A4:large BatchSize=$bs PS$($v[0]) summary Adds=5/Updates=5/Deletes=5/Unchanged=30" `
+                    ($adds -eq 5 -and $updates -eq 5 -and $deletes -eq 5 -and $none -eq 30) `
+                    "Adds=$adds Updates=$updates Deletes=$deletes Unchanged=$none"
+            }
+            # Self-consistency: how many merge passes it took is an internal implementation detail -
+            # the same input, same script, same version must produce the same bytes regardless. Byte-
+            # identical is the right bar here, unlike the cross-script check below, since there is no
+            # sort-order difference between three runs of the same script.
+            if ($largeHash.ContainsKey(1) -and $largeHash.ContainsKey(2)) {
+                Assert-Check "A4:large PS$($v[0]) BatchSize 1 == 2" ($largeHash[1] -eq $largeHash[2]) "1=$($largeHash[1]) 2=$($largeHash[2])"
+            }
+            if ($largeHash.ContainsKey(1) -and $largeHash.ContainsKey(1000)) {
+                Assert-Check "A4:large PS$($v[0]) BatchSize 1 == 1000" ($largeHash[1] -eq $largeHash[1000]) "1=$($largeHash[1]) 1000=$($largeHash[1000])"
+            }
+        }
+
+        # small, once, PS7 only - the reference point every large BatchSize's output is compared
+        # against below.
+        $outSmall = Join-Path $work 'a4_small_7'
+        Clear-Dir $outSmall
+        pwsh -NoProfile -File (Join-Path $ScriptFolder 'CompareCSVs_small.ps1') `
+            -PreviousCSVFile $mpPrev -CurrentCSVFile $mpCurr -AnchorColumn ID -OutputFolder $outSmall *>&1 | Out-Null
+        $fSmall = Get-ChildItem -Path $outSmall -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $fSmall) {
+            Assert-Check 'A4:small PS7 report written' $false
+        } else {
+            foreach ($bs in 1,2,1000) {
+                if ($largeOut7.ContainsKey($bs)) {
+                    Test-ContentEqual "A4:large(BatchSize=$bs) == small (content)" $largeOut7[$bs] $fSmall.FullName 1
+                }
+            }
+        }
+    }
+
+    # A5: -RejectDuplicateAnchors turns a duplicate anchor from a warning into a rejection. Default
+    # (no switch) behaviour needs no new check here - duplicates\ is already one of Agreement mode's
+    # behavioural fixtures, checked there against duplicates_standard.csv/duplicates_detailed.csv
+    # (Group D's baselines), so that half is covered by an existing run, not a bespoke assertion.
+    # duplicates\ carries a Previous-side duplicate (anchor '1') that every script's processing order
+    # reaches before Current's own duplicate (anchor '3'), so it can only exercise the Previous-side
+    # throw on its own - medium and large discover a Current-side duplicate through a different code
+    # path than a Previous-side one, so a second, ad-hoc, uncommitted fixture isolates that half: the
+    # same Current.csv, paired with a Previous.csv that has the Previous-side duplicate removed.
+    "=== A5: -RejectDuplicateAnchors ==="
+    $dupDir = Join-Path $FixtureFolder 'duplicates'
+    $dupPrev = Join-Path $dupDir 'prev.csv'; $dupCurr = Join-Path $dupDir 'curr.csv'
+    if (-not (Test-Path $dupPrev) -or -not (Test-Path $dupCurr)) {
+        Assert-Check 'duplicates fixture present' $false "expected prev.csv/curr.csv under $dupDir"
+    } else {
+        $curronlyDir = Join-Path $work 'a5_curronly'
+        if (Test-Path -LiteralPath $curronlyDir) { Remove-Item -LiteralPath $curronlyDir -Recurse -Force }
+        New-Item -ItemType Directory -Force $curronlyDir | Out-Null
+        $curronlyPrev = Join-Path $curronlyDir 'prev.csv'; $curronlyCurr = Join-Path $curronlyDir 'curr.csv'
+        [System.IO.File]::WriteAllText($curronlyPrev, "ID,X,Y`r`n1,FIRST,p`r`n2,keep,r`r`n3,solo,s`r`n", (New-Object System.Text.UTF8Encoding($true)))
+        Copy-Item -LiteralPath $dupCurr -Destination $curronlyCurr -Force
+
+        # DupRow/FirstRow are data-row numbers (header excluded), matching how every script's own
+        # $rowNum / $rec[0] counts - confirmed against duplicates\'s literal content and against the
+        # trimmed copy above, not assumed.
+        $a5Cases = @(
+            @{ Label = 'Previous'; Prev = $dupPrev; Curr = $dupCurr; Anchor = '1'; DupRow = 2; FirstRow = 1 }
+            @{ Label = 'Current';  Prev = $curronlyPrev; Curr = $curronlyCurr; Anchor = '3'; DupRow = 4; FirstRow = 3 }
+        )
+        foreach ($case in $a5Cases) {
+            foreach ($s in $groupAScripts) {
+                foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+                    $out = Join-Path $work ("a5_{0}_{1}_{2}" -f $case.Label,$s,$v[0])
+                    Clear-Dir $out
+                    $r = & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                            -PreviousCSVFile $case.Prev -CurrentCSVFile $case.Curr `
+                            -AnchorColumn ID -OutputFolder $out -RejectDuplicateAnchors 2>&1
+                    $exitCode = $LASTEXITCODE
+                    # Joined/whitespace-collapsed before matching - PS5.1 can wrap a long thrown
+                    # message across several captured output objects (see the E3/A1 notes above), and
+                    # this message's -RejectDuplicateAnchors suffix makes it long enough to risk it.
+                    $joined = (($r -join ' ') -replace '\s+', ' ').Trim()
+                    $expectMsg = "Duplicate anchor '$($case.Anchor)' in $($case.Label) file at row $($case.DupRow) (first seen at row $($case.FirstRow)). Rejected because -RejectDuplicateAnchors was specified."
+                    $matched = $joined -match [regex]::Escape($expectMsg)
+                    # No REPORT written is the universal claim for this case. "Zero files of any kind"
+                    # only holds for large, and only because its
+                    # duplicate check fires during the merge/sort phase, before its pending-output
+                    # writer ever opens - confirmed here, not assumed. medium and Detailed write rows to
+                    # a pending-name file as they stream and only Move-Item it to the real report name
+                    # on success, so a throw mid-stream can leave that pending file's .tmp behind -
+                    # already-documented behaviour for ANY mid-write throw, not a new gap
+                    # this case introduces, so it is deliberately not asserted against here.
+                    $reportFilesLeft = (Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue).Count
+                    $ok = ($exitCode -ne 0 -and $matched -and $reportFilesLeft -eq 0)
+                    $detail = "exit=$exitCode matched=$matched reportFilesLeft=$reportFilesLeft"
+                    if ($s -eq 'large') {
+                        $anyFilesLeft = (Get-ChildItem -Path $out -ErrorAction SilentlyContinue).Count
+                        $ok = $ok -and ($anyFilesLeft -eq 0)
+                        $detail += " anyFilesLeft=$anyFilesLeft"
+                    }
+                    Assert-Check "A5:$($case.Label) $s PS$($v[0])" $ok $detail
+                }
+            }
+        }
+    }
+
+    # A7: line terminators - CRLF and LF inputs carrying identical content must produce identical
+    # output. Every script's own reader comment claims "handles CRLF/LF/CR terminators"
+    # (small:135, medium:138, large:171, Detailed:209, Delta:225); newlines\ only ever ran LF input
+    # against its own recorded baseline, which would stay green even if LF and CRLF silently diverged -
+    # it never compared the two terminator styles against EACH OTHER, which is what actually tests the
+    # claim. Compared directly, not against a baseline, deliberately: a baseline only catches drift from
+    # what was recorded, not two inputs that already disagree with each other.
+    # CR-only excluded by design, not oversight, decided 2026-08-20: a Classic Mac OS
+    # convention retired since 2001, no realistic exposure for this repo's actual users. All five
+    # scripts run here, unlike A1/A2/A4/A5 - this case is scoped to all five, and there is no
+    # cross-script agreement being asserted (each script is only compared against its own other-input
+    # run), so Delta's different output shape is not a problem here the way it would be for a sibling
+    # check.
+    "=== A7: line terminators (CRLF vs LF) ==="
+    $termDir = Join-Path $FixtureFolder 'terminators'
+    $crlfPrev = Join-Path $termDir 'crlf_prev.csv'; $crlfCurr = Join-Path $termDir 'crlf_curr.csv'
+    $lfPrev = Join-Path $termDir 'lf_prev.csv'; $lfCurr = Join-Path $termDir 'lf_curr.csv'
+    if (-not (Test-Path $crlfPrev) -or -not (Test-Path $crlfCurr) -or -not (Test-Path $lfPrev) -or -not (Test-Path $lfCurr)) {
+        Assert-Check 'terminators fixture present' $false "expected crlf_*.csv/lf_*.csv under $termDir"
+    } else {
+        foreach ($s in $Scripts) {
+            foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+                $outCrlf = Join-Path $work ("a7_{0}_crlf_{1}" -f $s,$v[0])
+                $crlfHash = Invoke-One $s $v[1] $crlfPrev $crlfCurr $outCrlf
+                $outLf = Join-Path $work ("a7_{0}_lf_{1}" -f $s,$v[0])
+                $lfHash = Invoke-One $s $v[1] $lfPrev $lfCurr $outLf
+                Assert-Check "A7:$s PS$($v[0]) CRLF input == LF input (same content)" ($crlfHash -ne 'NOFILE' -and $crlfHash -eq $lfHash) "crlf=$crlfHash lf=$lfHash"
+            }
+        }
+    }
+
+    # A8: a genuine change INSIDE an embedded multi-line quoted value must be detected, not silently
+    # absorbed - the closest existing risk to this repo's original defect (a quoted field's embedded
+    # newline splitting into a phantom row, both sides then corrupting identically and comparing as
+    # None). newlines\ and symmetric\ both carry an embedded-newline value, but it is IDENTICAL in
+    # Previous and Current in both - neither exercises the multi-line value itself changing. All five
+    # scripts run here - unlike A1/A2/A4/A5's groupAScripts, since this asserts each script's own
+    # classification of a genuine change, not cross-script agreement.
+    # newline-diff\ is CRLF row-terminated (the file's own convention) with LF embedded inside the
+    # quoted values - deliberately mismatched, so this same fixture also proves quote-tracking is
+    # independent of the outer line-terminator convention, without a separate case.
+    "=== A8: change inside an embedded multi-line value ==="
+    $ndDir = Join-Path $FixtureFolder 'newline-diff'
+    $ndPrev = Join-Path $ndDir 'prev.csv'; $ndCurr = Join-Path $ndDir 'curr.csv'
+    if (-not (Test-Path $ndPrev) -or -not (Test-Path $ndCurr)) {
+        Assert-Check 'newline-diff fixture present' $false "expected prev.csv/curr.csv under $ndDir"
+    } else {
+        foreach ($s in $Scripts) {
+            foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+                $out = Join-Path $work ("a8_{0}_{1}" -f $s,$v[0])
+                Clear-Dir $out
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                    -PreviousCSVFile $ndPrev -CurrentCSVFile $ndCurr -AnchorColumn ID -OutputFolder $out *>&1 | Out-Null
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A8:$s PS$($v[0]) report written" $false; continue }
+                $rows = Import-Csv -LiteralPath $f.FullName
+
+                if ($s -eq 'Delta') {
+                    # Delta's shape has no old/new pairs - every column is Current's own value,
+                    # verbatim, and it never writes a None row at all, so ID=3 must be ABSENT rather
+                    # than present-and-unchanged.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $r3 = @($rows | Where-Object { $_.ID -eq '3' })
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 Update (multi-line change detected)" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update') "found $($r1.Count) row(s), ChangeType=$($r1[0].ChangeType)"
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 Notes carries full changed value, embedded newline intact" `
+                        ($r1.Count -eq 1 -and $r1[0].Notes -ceq "Line1`nLineTHREE") "found '$($r1[0].Notes)'"
+                    Assert-Check "A8:$s PS$($v[0]) ID=2 Update via Dept, Notes untouched but still shown" `
+                        ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'Update' -and $r2[0].Notes -ceq "Same`nSame2") "ChangeType=$($r2[0].ChangeType) Notes='$($r2[0].Notes)'"
+                    Assert-Check "A8:$s PS$($v[0]) ID=3 absent (Delta never writes a None row)" ($r3.Count -eq 0) "found $($r3.Count) row(s)"
+                }
+                elseif ($s -eq 'Detailed') {
+                    # Detailed always populates old/new regardless of match (A2 already established
+                    # this) - so the "stays bare" proof standard shape gives for ID=2 becomes
+                    # "match notes stays True" here instead: old/new are populated on both sides with
+                    # the SAME unchanged multi-line value.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $r3 = @($rows | Where-Object { $_.ID -eq '3' })
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 Update, match notes False" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and $r1[0].'match notes' -eq 'False') "ChangeType=$($r1[0].ChangeType) match=$($r1[0].'match notes')"
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 old/new notes carry full multi-line values, embedded newline intact" `
+                        ($r1[0].'old notes' -ceq "Line1`nLine2" -and $r1[0].'new notes' -ceq "Line1`nLineTHREE") "old='$($r1[0].'old notes')' new='$($r1[0].'new notes')'"
+                    Assert-Check "A8:$s PS$($v[0]) ID=2 Update via Dept, match notes True (multi-line itself unchanged)" `
+                        ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'Update' -and $r2[0].'match notes' -eq 'True') "ChangeType=$($r2[0].ChangeType) match=$($r2[0].'match notes')"
+                    Assert-Check "A8:$s PS$($v[0]) ID=3 None control row" ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'None') "ChangeType=$($r3[0].ChangeType)"
+                }
+                else {
+                    # Standard shape (small/medium/large): a bare cell means unchanged, populated
+                    # old/new means changed - the direct test of the intro's original defect, that a
+                    # changed multi-line value must never render as a bare cell.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $r3 = @($rows | Where-Object { $_.ID -eq '3' })
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 Update, never None" ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update') "ChangeType=$($r1[0].ChangeType)"
+                    Assert-Check "A8:$s PS$($v[0]) ID=1 old/new notes carry full multi-line values, embedded newline intact" `
+                        ($r1[0].'old notes' -ceq "Line1`nLine2" -and $r1[0].'new notes' -ceq "Line1`nLineTHREE") "old='$($r1[0].'old notes')' new='$($r1[0].'new notes')'"
+                    Assert-Check "A8:$s PS$($v[0]) ID=2 Update via Dept, notes column stays bare" `
+                        ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'Update' -and [string]::IsNullOrEmpty($r2[0].'old notes') -and [string]::IsNullOrEmpty($r2[0].'new notes')) "ChangeType=$($r2[0].ChangeType) old='$($r2[0].'old notes')' new='$($r2[0].'new notes')'"
+                    Assert-Check "A8:$s PS$($v[0]) ID=3 None control row" ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'None') "ChangeType=$($r3[0].ChangeType)"
+                }
+            }
+        }
+    }
+
+    # A3: a non-comma delimiter (-DelimiterName tab) must plumb through TextFieldParser.SetDelimiters()
+    # and ConvertTo-CsvLine identically to the default comma path - mis-parsing here is silent and
+    # total, not an error. delimiters\ carries the SAME logical content twice: tab-delimited
+    # (prev.csv/curr.csv) and comma-delimited (prev_comma.csv/curr_comma.csv), with no value
+    # containing either character - the constraint that makes a literal tab->comma substitution an
+    # exact comparison rather than an approximation. Scoped to the four groupAScripts (defined above,
+    # in the A1 block), matching A1/A2/A4/A5 - Delta's own -DelimiterName coverage is
+    # G18's job, not this pass's.
+    # Re-derived from a real run, not transcribed from the plan's original 2026-08-04 text, per
+    # this group's own discipline note: that text predates G11/G12 (2026-08-14) removing small's/
+    # medium's anchor sort, so its "all three standard-shape scripts produce identical bytes" claim is
+    # replaced here with the same content-equal, order-insensitive comparison A1/A4 already use for
+    # cross-script agreement. The tab-substituted-equals-comma self-consistency claim held exactly as
+    # written when checked directly against all four scripts, both PS versions.
+    "=== A3: non-comma delimiter (-DelimiterName tab) ==="
+    $delimDir = Join-Path $FixtureFolder 'delimiters'
+    $tabPrev = Join-Path $delimDir 'prev.csv'; $tabCurr = Join-Path $delimDir 'curr.csv'
+    $commaPrev = Join-Path $delimDir 'prev_comma.csv'; $commaCurr = Join-Path $delimDir 'curr_comma.csv'
+    if (-not (Test-Path $tabPrev) -or -not (Test-Path $tabCurr) -or -not (Test-Path $commaPrev) -or -not (Test-Path $commaCurr)) {
+        Assert-Check 'delimiters fixture present' $false "expected prev.csv/curr.csv/prev_comma.csv/curr_comma.csv under $delimDir"
+    } else {
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $tabOut = @{}    # script -> tab-run report path, PS7 only, for the cross-script check below
+            $commaOut = @{}  # script -> comma-run report path, PS7 only
+            foreach ($s in $groupAScripts) {
+                $outTab = Join-Path $work ("a3_{0}_tab_{1}" -f $s,$v[0])
+                Clear-Dir $outTab
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                    -PreviousCSVFile $tabPrev -CurrentCSVFile $tabCurr -AnchorColumn ID -OutputFolder $outTab -DelimiterName tab *>&1 | Out-Null
+                $fTab = Get-ChildItem -Path $outTab -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+
+                $outComma = Join-Path $work ("a3_{0}_comma_{1}" -f $s,$v[0])
+                Clear-Dir $outComma
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                    -PreviousCSVFile $commaPrev -CurrentCSVFile $commaCurr -AnchorColumn ID -OutputFolder $outComma *>&1 | Out-Null
+                $fComma = Get-ChildItem -Path $outComma -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+
+                if (-not $fTab -or -not $fComma) {
+                    Assert-Check "A3:$s PS$($v[0]) report written (tab and comma)" $false "tab=$([bool]$fTab) comma=$([bool]$fComma)"
+                    continue
+                }
+                if ($v[0] -eq '7') { $tabOut[$s] = $fTab.FullName; $commaOut[$s] = $fComma.FullName }
+
+                # Tabs are the delimiter here, never content (the fixture's own no-embedded-delimiter
+                # constraint), so a literal character substitution is exact, not an approximation.
+                $tabText = [System.IO.File]::ReadAllText($fTab.FullName)
+                $commaText = [System.IO.File]::ReadAllText($fComma.FullName)
+                $substituted = $tabText -replace "`t", ','
+                Assert-Check "A3:$s PS$($v[0]) tab output, tabs->commas, == comma output" ($substituted -ceq $commaText)
+            }
+            # Order-insensitive on purpose, matching A1/A4: large still sorts, small/medium don't
+            # (G11/G12), so this is content equality, not the byte-identical claim the plan's
+            # original A3 text carried before that finding - confirmed by a real run where small and
+            # medium happened to match byte-for-byte on this fixture but large's row order did not.
+            if ($v[0] -eq '7') {
+                foreach ($label in @('tab','comma')) {
+                    $map = if ($label -eq 'tab') { $tabOut } else { $commaOut }
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'medium') {
+                        Test-ContentEqual "A3:small == medium ($label)" $map['small'] $map['medium'] 1
+                    }
+                    if ($groupAScripts -contains 'small' -and $groupAScripts -contains 'large') {
+                        Test-ContentEqual "A3:small == large ($label)" $map['small'] $map['large'] 1
+                    }
+                }
+            }
+        }
+    }
+
+    # A6: empty and whitespace-only values, in the core comparison and in each shape's own output.
+    # Protects the comparison's own distinction between a bare unchanged cell and an explicitly-empty
+    # "" one. No committed fixture before this one carried an empty field at all (verified 2026-08-19
+    # across all six behavioural fixtures), so three of the Update-row readings README.md documents
+    # (blank/blank = unchanged, value/blank = cleared, blank/value = added) were exercised by nothing
+    # the suite ran, and the core comparison path had no fixture standing behind that distinction at
+    # all. empty-values\ carries every case at once: ID=1 exercises a cleared value, an added value, a
+    # both-sides-empty column and a whitespace-vs-empty column together; ID=2 is fully unchanged,
+    # including three empty columns, proving empty-vs-empty manufactures no difference; ID=3/ID=4 are
+    # Delete/Add, covering how each shape renders empties on a one-sided record.
+    # All five scripts run here, unlike A1/A2/A3/A4/A5's groupAScripts - this asserts each shape's own
+    # rendering of empty/whitespace values, not cross-script agreement, the same reasoning A7/A8 used
+    # to include Delta.
+    # Re-derived from a real run, not transcribed from the plan's original 2026-08-04 text, per
+    # this group's own discipline note. One correction found: the plan's Delta assertion describes
+    # "a record whose ONLY change is populated -> empty"; this fixture's ID=1 changes Cleared, Added
+    # AND Padded together (built exactly to the plan's own fixture spec), so what is actually
+    # checked below is that Delta's Update row emits Current's own value for the cleared field
+    # verbatim (an empty cell), not a claim about an isolated single-column change.
+    "=== A6: empty and whitespace-only values ==="
+    $evDir = Join-Path $FixtureFolder 'empty-values'
+    $evPrev = Join-Path $evDir 'prev.csv'; $evCurr = Join-Path $evDir 'curr.csv'
+    if (-not (Test-Path $evPrev) -or -not (Test-Path $evCurr)) {
+        Assert-Check 'empty-values fixture present' $false "expected prev.csv/curr.csv under $evDir"
+    } else {
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $stdShapeOut = @{}   # script -> report path, PS7 only, for the cross-script check below
+            foreach ($s in $Scripts) {
+                $out = Join-Path $work ("a6_{0}_{1}" -f $s,$v[0])
+                Clear-Dir $out
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                    -PreviousCSVFile $evPrev -CurrentCSVFile $evCurr -AnchorColumn ID -OutputFolder $out *>&1 | Out-Null
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A6:$s PS$($v[0]) report written" $false; continue }
+                if ($v[0] -eq '7' -and $s -in @('small','medium','large')) { $stdShapeOut[$s] = $f.FullName }
+                $rows = Import-Csv -LiteralPath $f.FullName
+
+                if ($s -eq 'Delta') {
+                    # Delta has no old/new pair and never writes an unchanged row (A8 already
+                    # established this) - ID=2 must be ABSENT, not present-and-None.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $r3 = @($rows | Where-Object { $_.ID -eq '3' })
+                    $r4 = @($rows | Where-Object { $_.ID -eq '4' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 Update, Cleared shown empty (Current's own verbatim value)" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and $r1[0].Cleared -ceq '') "ChangeType=$($r1[0].ChangeType) Cleared='$($r1[0].Cleared)'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=2 absent (fully unchanged, Delta never writes None)" ($r2.Count -eq 0) "found $($r2.Count) row(s)"
+                    Assert-Check "A6:$s PS$($v[0]) ID=3 Delete, Previous's values in Current's column layout" `
+                        ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'Delete' -and $r3[0].Cleared -ceq 'Legal' -and $r3[0].Added -ceq 'g') "ChangeType=$($r3[0].ChangeType) Cleared='$($r3[0].Cleared)' Added='$($r3[0].Added)'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=4 Add, Current's values verbatim" `
+                        ($r4.Count -eq 1 -and $r4[0].ChangeType -eq 'Add' -and $r4[0].Cleared -ceq 'New' -and $r4[0].Added -ceq 'n') "ChangeType=$($r4[0].ChangeType) Cleared='$($r4[0].Cleared)' Added='$($r4[0].Added)'"
+                }
+                elseif ($s -eq 'Detailed') {
+                    # Detailed always populates old/new regardless of match (A2 already established
+                    # this) - so the proof here is the match column, not bare-vs-populated.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 Update, match cleared/added/padded False, match bothempty True" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and $r1[0].'match cleared' -eq 'False' -and $r1[0].'match added' -eq 'False' -and $r1[0].'match padded' -eq 'False' -and $r1[0].'match bothempty' -eq 'True') `
+                        "match cleared=$($r1[0].'match cleared') added=$($r1[0].'match added') padded=$($r1[0].'match padded') bothempty=$($r1[0].'match bothempty')"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old cleared/new cleared render '<old>','' (cleared value)" `
+                        ($r1[0].'old cleared' -ceq 'Ops' -and $r1[0].'new cleared' -ceq '') "old='$($r1[0].'old cleared')' new='$($r1[0].'new cleared')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old added/new added render '','<new>' (added value)" `
+                        ($r1[0].'old added' -ceq '' -and $r1[0].'new added' -ceq 'Sales') "old='$($r1[0].'old added')' new='$($r1[0].'new added')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old padded/new padded whitespace vs empty, not bare" `
+                        ($r1[0].'old padded' -ceq '   ' -and $r1[0].'new padded' -ceq '') "old='$($r1[0].'old padded')' new='$($r1[0].'new padded')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=2 None, match all True (empty-vs-empty manufactures no difference)" `
+                        ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'None' -and $r2[0].'match cleared' -eq 'True' -and $r2[0].'match added' -eq 'True' -and $r2[0].'match bothempty' -eq 'True' -and $r2[0].'match padded' -eq 'True') `
+                        "ChangeType=$($r2[0].ChangeType) match cleared=$($r2[0].'match cleared') added=$($r2[0].'match added') bothempty=$($r2[0].'match bothempty') padded=$($r2[0].'match padded')"
+                }
+                else {
+                    # Standard shape (small/medium/large): a bare cell means unchanged, populated
+                    # old/new means changed - the direct test of that same bare-vs-empty distinction.
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r2 = @($rows | Where-Object { $_.ID -eq '2' })
+                    $r3 = @($rows | Where-Object { $_.ID -eq '3' })
+                    $r4 = @($rows | Where-Object { $_.ID -eq '4' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old cleared/new cleared render '<old>','' (cleared value)" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and $r1[0].'old cleared' -ceq 'Ops' -and $r1[0].'new cleared' -ceq '') "ChangeType=$($r1[0].ChangeType) old='$($r1[0].'old cleared')' new='$($r1[0].'new cleared')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old added/new added render '','<new>' (added value)" `
+                        ($r1[0].'old added' -ceq '' -and $r1[0].'new added' -ceq 'Sales') "old='$($r1[0].'old added')' new='$($r1[0].'new added')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old bothempty/new bothempty stay bare (empty both sides)" `
+                        ([string]::IsNullOrEmpty($r1[0].'old bothempty') -and [string]::IsNullOrEmpty($r1[0].'new bothempty')) "old='$($r1[0].'old bothempty')' new='$($r1[0].'new bothempty')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=1 old padded/new padded whitespace vs empty, not bare" `
+                        ($r1[0].'old padded' -ceq '   ' -and $r1[0].'new padded' -ceq '') "old='$($r1[0].'old padded')' new='$($r1[0].'new padded')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=2 None (empty-vs-empty manufactures no difference)" ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'None') "ChangeType=$($r2[0].ChangeType)"
+                    Assert-Check "A6:$s PS$($v[0]) ID=3 Delete, old cleared/old added carry Previous's values" `
+                        ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'Delete' -and $r3[0].'old cleared' -ceq 'Legal' -and $r3[0].'old added' -ceq 'g') "ChangeType=$($r3[0].ChangeType) old cleared='$($r3[0].'old cleared')' old added='$($r3[0].'old added')'"
+                    Assert-Check "A6:$s PS$($v[0]) ID=4 Add, new cleared/new added carry Current's values" `
+                        ($r4.Count -eq 1 -and $r4[0].ChangeType -eq 'Add' -and $r4[0].'new cleared' -ceq 'New' -and $r4[0].'new added' -ceq 'n') "ChangeType=$($r4[0].ChangeType) new cleared='$($r4[0].'new cleared')' new added='$($r4[0].'new added')'"
+                }
+            }
+            # Order-insensitive on purpose, matching A1/A3/A4: large still sorts, small/medium don't.
+            if ($v[0] -eq '7') {
+                Test-ContentEqual "A6:small == medium" $stdShapeOut['small'] $stdShapeOut['medium'] 1
+                Test-ContentEqual "A6:small == large" $stdShapeOut['small'] $stdShapeOut['large'] 1
             }
         }
     }

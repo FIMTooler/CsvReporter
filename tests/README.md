@@ -6,7 +6,8 @@ Verification suite for the five `CompareCSVs_*.ps1` scripts at the repo root.
 .\tests\Invoke-CompareVerification.ps1                 # agreement across scripts and PS versions
 .\tests\Invoke-CompareVerification.ps1 -Mode Malformed # bad input and mismatched column sets
 .\tests\Invoke-CompareVerification.ps1 -Mode Memory    # peak working set (see below)
-.\tests\Invoke-CompareVerification.ps1 -Mode Core      # Detailed's transform/date/ignore features
+.\tests\Invoke-CompareVerification.ps1 -Mode Core      # degenerate inputs, path handling, Detailed's
+                                                        # transform/date/ignore features, and Group A
 ```
 
 Every mode prints `PASS`/`FAIL` per check, ends with a `RESULT:` line, and **exits non-zero if any
@@ -116,13 +117,39 @@ baseline process. Profiling all four across both runtimes is a separate exercise
 after any change affecting how much data a script holds — `large` ceasing to peak below `small` is a
 signal about the change, not a performance curiosity.
 
-**Core** exercises `CompareCSVs_Detailed.ps1`'s `-ValueTransforms`, `-DateFormats` and
-`-IgnoreColumns` against the `newlines/` fixture, on **both** PowerShell versions, implemented
-2026-08-10. No new fixture: `newlines/` already carries the `Status` and
-`HireDate` columns those cases were written against, and `Dept` (present in every fixture) covers
-`-IgnoreColumns`. Only those three parameters are exercised under this mode; other planned cases —
-rejection paths, non-default delimiters and encodings, `-CaseSensitive`, `-BatchSize` — remain
-unimplemented.
+**Core** holds every specified case with no better-fitting mode, on **both** PowerShell versions:
+
+- a 0-byte Previous/Current file, naming the right side and writing nothing (2026-08-06)
+- a single-data-row fixture on both sides, guarding a PowerShell array-unrolling trap (2026-08-06)
+- `CompareCSVs_Detailed.ps1`'s `-ValueTransforms`, `-DateFormats` and `-IgnoreColumns` against the
+  `newlines/` fixture, implemented 2026-08-10 — no new fixture needed, since `newlines/` already
+  carries the `Status`/`HireDate` columns those cases were written against, and `Dept` (present in
+  every fixture) covers `-IgnoreColumns`
+- a path decorated with wildcard metacharacters or non-ASCII characters, accepted and
+  byte-identical to an undecorated run (2026-08-20)
+- `-CaseSensitive` changing anchor identity and value comparison, against the `casing/` fixture
+  (2026-08-20)
+- `-EncodingName ansi` decoding a BOM-less legacy export correctly where the default doesn't, against
+  the `encoding/` fixture (2026-08-20)
+- `large`'s multi-pass merge, forced by a small `-BatchSize` against the `merge-passes/` fixture (40
+  rows at `-BatchSize 1` exceed the internal fan-in of 32), self-consistent across batch sizes and
+  content-equal to `small`'s output (2026-08-20)
+- `-RejectDuplicateAnchors` turning a duplicate anchor from a warning into a rejection that names the
+  right side and writes no report, against the `duplicates/` fixture and an uncommitted
+  Current-only-duplicate variant generated at test time (2026-08-20)
+- CRLF and LF input carrying identical content producing byte-identical output, per script, against
+  the `terminators/` fixture — all five scripts, including `Delta` (2026-08-20)
+- a genuine change inside an embedded multi-line quoted value being classified `Update`, never `None`,
+  with the full value (embedded newline intact) surfaced in each script's own shape, against the
+  `newline-diff/` fixture — all five scripts, including `Delta` (2026-08-20)
+- a non-comma delimiter (`-DelimiterName tab`) plumbing through correctly: each script's tab-delimited
+  output, with every tab replaced by a comma, is byte-identical to its own comma-delimited output on
+  the same data, against the `delimiters/` fixture (2026-08-20)
+- empty and whitespace-only values in the core comparison and in each shape's own output — a cleared
+  value, an added value, a both-sides-empty column and a whitespace-vs-empty column, against the
+  `empty-values/` fixture — all five scripts, including `Delta` (2026-08-20)
+
+All 8 of the silent-wrongness group's cases are now covered.
 
 Hashtable-valued parameters (`-ValueTransforms`, `-DateFormats`) cannot cross a `-File` process
 boundary as command-line text — PowerShell renders an object argument by its `ToString()`
@@ -139,10 +166,10 @@ about how much was checked:
 
 | mode | assertions | runtimes covered | runtime |
 |---|---|---|---|
-| Agreement | 85 | 5.1 and 7 | seconds |
-| Malformed | 91 | 5.1 and 7 | seconds |
+| Agreement | 84 | 5.1 and 7 | seconds |
+| Malformed | 160 | 5.1 and 7 | seconds |
 | Memory | **1** | 7 only | minutes — 15 runs over a 100K-row fixture |
-| Core | 17 | 5.1 and 7 | seconds |
+| Core | 361 | 5.1 and 7 | seconds |
 
 A green Memory run confirms one inequality. It is not a broad statement about performance.
 
@@ -165,10 +192,17 @@ Two deliberate exceptions, both providing coverage nothing else does — **do no
 | `newlines/` | A quoted field containing an embedded newline. Reproduces the original reader bug: phantom rows and fields shifted into the wrong columns. Also carries status and date values suitable for testing `-ValueTransforms` and `-DateFormats` on `Detailed`. |
 | `symmetric/` | A genuinely changed field (`Dept: IT -> FINANCE`) on a record containing an embedded newline. Under the old reader **both** files corrupted identically, so the change was reported as `None` — the worst failure mode, because nothing looks wrong. |
 | `collation/` | Anchors `_z A-1 a_1 b-1 B-10 b-2`, chosen so ordinal and culture collation **disagree**. Anchors like `1,2,3` sort identically under both and cannot detect a collation change. |
-| `duplicates/` | A repeated anchor on **each** side whose copies hold different values, so first-occurrence-wins and last-occurrence-wins produce visibly different output. |
+| `duplicates/` | A repeated anchor on **each** side whose copies hold different values, so first-occurrence-wins and last-occurrence-wins produce visibly different output. Also used by `-Mode Core`'s A5 for the `-RejectDuplicateAnchors` Previous-side throw; its own Current-side throw needs a second, uncommitted fixture generated at test time, since this one's Previous-side duplicate is always reached first. |
 | `column-order/` | Previous (`ID,Alpha,Beta,Gamma`) and Current (`Gamma,ID,Alpha,Beta`) order columns differently, and the anchor sits at column 0 in one and column 1 in the other. The only fixture exercising a Previous-to-Current column permutation and an anchor not at column 0 - added for `Delta` (G9), which permutes Delete rows' values into Current's column order. |
 | `malformed/` | `good.csv` plus `short_row`, `long_row`, `bad_quotes`, `dup_anchor`, `header_only` (header-only file, byte-identical header to `good.csv`'s, added for G9 - exercises the empty-Previous/empty-Current throw without the column-mismatch check masking it). Each must be rejected or warned about, never silently accepted. |
 | `mismatched-columns/` | Column sets that differ three ways: extra column in Current, extra in Previous, and a renamed column at the same count. All three must be rejected. Used by `-Mode Malformed`, not by Agreement — there every script correctly writes no file, which Agreement would score as agreement. |
+| `casing/` | `abc`/`ABC` collide under the default case-insensitive anchor comparer and stay distinct under `-CaseSensitive`, which also governs ordinary value comparison, not just anchor identity. Used by `-Mode Core`'s A1. |
+| `encoding/` | Previous is Windows-1252 with no BOM, Current is UTF-8 with BOM, same logical content — the asymmetry means a decoding bug shows up as a spurious difference rather than both sides corrupting identically. Used by `-Mode Core`'s A2. |
+| `merge-passes/` | 40 data rows (30 unchanged, 5 updated, 5 deleted, 5 added), sized so `-BatchSize 1` produces 40 run files and forces `large`'s multi-pass merge (internal fan-in of 32). Used by `-Mode Core`'s A4. |
+| `terminators/` | `sparse/`'s content (all four change types, three columns), in two byte-variants: `crlf_*.csv` and `lf_*.csv`, otherwise identical. No embedded newline in any value - the terminator is the only thing under test. Used by `-Mode Core`'s A7, which asserts each script's own CRLF-input output is byte-identical to its LF-input output. |
+| `newline-diff/` | Three rows: one whose only change is inside a multi-line quoted value, one whose multi-line value is unchanged but another column changed (control against false-positive "any multi-line field" flagging), and one fully unchanged plain-value row (control). CRLF row terminators, but the embedded newline inside the quoted values is bare LF - deliberately mismatched from the file's own convention, so quote-tracking is proven independent of it without a separate fixture. Used by `-Mode Core`'s A8. |
+| `delimiters/` | `sparse/`'s content (all four change types), in two delimiter variants: `prev.csv`/`curr.csv` (tab-delimited) and `prev_comma.csv`/`curr_comma.csv` (comma-delimited), otherwise identical. No value contains a comma or a tab, so a literal tab-to-comma substitution on the tab-delimited report is an exact comparison against the comma-delimited report. Used by `-Mode Core`'s A3. |
+| `empty-values/` | Four rows, five columns: a cleared value (populated in Previous, empty in Current), an added value (the reverse), a column empty on both sides, and a whitespace-only value against an empty one, all on one record; a fully-unchanged record with three empty columns (proves empty-vs-empty manufactures no difference); a Delete and an Add record, each carrying empty cells. Used by `-Mode Core`'s A6. |
 
 Fixtures are committed rather than generated so they stop being re-derived, and because several
 encode findings that were not obvious. Add to them rather than replacing them.
@@ -185,14 +219,15 @@ Worth knowing before trusting a green run:
   passes. What is still not covered: a baseline only catches drift from what was recorded on
   2026-08-09, and recorded is not the same as independently verified: the baselines capture what the
   scripts produced on that date, not what an independent oracle proved correct.
-- **Coverage of rejection paths is thin.** The scripts reject a great many bad inputs; this suite
-  exercises a small fraction of them. Non-default `-DelimiterName`, `-EncodingName`, `-CaseSensitive`
-  and `-BatchSize` are not exercised at all.
+- **Coverage of rejection paths is broader than it once was.** Group B/E closed the one-sided-testing
+  gap and path-guard regressions; `-EncodingName`, `-CaseSensitive`, a small-`-BatchSize` multi-pass
+  merge, `-RejectDuplicateAnchors`, CRLF-vs-LF agreement, a genuine change inside an embedded
+  multi-line value, non-default `-DelimiterName`, and empty/whitespace values are all exercised now
+  (`-Mode Core`'s A1/A2/A3/A4/A5/A6/A7/A8) — the silent-wrongness cases these all guard against are
+  fully covered.
 - **Memory runs on PowerShell 7 only.** Agreement and Malformed loop both versions; Memory does not,
   by design (see above). So no memory figure in this repo has been measured on 5.1, and none should
   be quoted as if it had.
-
-Further cases aimed squarely at those gaps are specified but not yet built.
 
 ## Notes
 
