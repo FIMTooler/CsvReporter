@@ -165,8 +165,18 @@ delimiter, written with -Encoding UTF8 and -NoTypeInformation.
             throw "$($side[0]) file was not parsed cleanly: $($side[1] -join ' / ') The usual cause is a blank column name in the header, which is replaced with an invented one such as 'H1' - and that name would travel into this function's own output header. File: $($side[2])"
         }
     }
-    if ($previous.Count -eq 0) { throw "Previous file yielded no rows: $PreviousCsvPath" }
-    if ($current.Count  -eq 0) { throw "Current file yielded no rows: $CurrentCsvPath" }
+    # A literal 0-byte file and a header-only file both leave Import-Csv silent with Count 0 -
+    # indistinguishable by row count alone. Checked here, not before Import-Csv runs: by this point
+    # Import-Csv already opened the file successfully, so Get-Item below can never hit a missing path,
+    # and a genuinely missing file still fails with Import-Csv's own message untouched.
+    if ($previous.Count -eq 0) {
+        if ((Get-Item -LiteralPath $PreviousCsvPath -ErrorAction Stop).Length -eq 0) { throw "Previous file is empty; no header line found: $PreviousCsvPath" }
+        throw "Previous file yielded no rows: $PreviousCsvPath"
+    }
+    if ($current.Count -eq 0) {
+        if ((Get-Item -LiteralPath $CurrentCsvPath -ErrorAction Stop).Length -eq 0) { throw "Current file is empty; no header line found: $CurrentCsvPath" }
+        throw "Current file yielded no rows: $CurrentCsvPath"
+    }
 
     # Element by element, never a joined string: a name containing the join character would let two
     # genuinely different sets compare equal.

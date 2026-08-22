@@ -23,7 +23,71 @@ New-Item -ItemType Directory -Force $w | Out-Null
 $e8 = New-Object System.Text.UTF8Encoding($true)
 function W($n,$t){ $p = Join-Path $w $n; [System.IO.File]::WriteAllText($p,$t,$e8); $p }
 
+# Marshals a batch of Compare-CsvData calls through a PS5.1 CHILD process back to this PS7 outer
+# host, via Export-Clixml/Import-Clixml - the same architecture tests/Invoke-CompareVerification.ps1
+# already uses for cross-version checks. Round-trip fidelity for a row array, the -IncludeSummary
+# hashtable and a caught exception's .Message is proven in section 0, not assumed here. $Calls maps
+# a label to a PowerShell EXPRESSION as a string, not a scriptblock - it has to run in a separate
+# process. A thrown exception is caught inside the child and comes back under the same label as the
+# string "ERROR: <message>", never a process crash.
+function Invoke-OnPS51([hashtable]$Calls) {
+    $xmlPath = Join-Path $w "ps51_$([guid]::NewGuid().ToString('N')).xml"
+    $lines = foreach ($label in $Calls.Keys) {
+        "try { `$results['$label'] = $($Calls[$label]) } catch { `$results['$label'] = ""ERROR: `$(`$_.Exception.Message)"" }"
+    }
+    $childScript = @"
+`$results = @{}
+. '$PSScriptRoot\Compare-CsvData.ps1'
+`$PSDefaultParameterValues['Compare-CsvData:Encoding'] = 'UTF8'
+`$PSDefaultParameterValues['Compare-CsvData:DelimiterName'] = 'comma'
+$($lines -join "`n")
+`$results | Export-Clixml -LiteralPath '$xmlPath' -Depth 5
+"@
+    $childOut = & powershell -NoProfile -NonInteractive -Command $childScript 2>&1
+    if (-not (Test-Path -LiteralPath $xmlPath)) { throw "PS5.1 child produced no results file. Child output: $childOut" }
+    $imported = Import-Clixml -LiteralPath $xmlPath
+    Remove-Item -LiteralPath $xmlPath -Force
+    $imported
+}
+function ThrowsPs51($label, $val, $expect) {
+    Ok $label ($val -is [string] -and $val.StartsWith('ERROR: ') -and $val -match $expect) "value='$val'"
+}
+
 "PSVersion: $($PSVersionTable.PSVersion)"
+""
+"=== 0. PS5.1 marshal mechanism: round-trip fidelity proven before being relied on ==="
+"    every PS5.1 check from here on depends on Invoke-OnPS51 - a PS5.1 CHILD process runs"
+"    Compare-CsvData and hands results back to this PS7 outer host via Export-Clixml/Import-Clixml."
+"    Proven here for all three shapes this suite needs, not assumed."
+$m0 = Invoke-OnPS51 @{
+    arr     = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID'"
+    summary = "Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+    thrown  = "Compare-CsvData -PreviousCsvPath '$fx\duplicates\prev.csv' -CurrentCsvPath '$fx\duplicates\curr.csv' -AnchorColumn 'ID'"
+}
+$arr0Live = Compare-CsvData -PreviousCsvPath "$fx\sparse\prev.csv" -CurrentCsvPath "$fx\sparse\curr.csv" -AnchorColumn 'ID'
+$arr0LiveSorted = ($arr0Live | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+$arr0Ps51Sorted = ($m0.arr    | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+Ok 'mechanism: array shape - row count survives the round trip' (@($m0.arr).Count -eq @($arr0Live).Count) "PS5.1=$(@($m0.arr).Count) PS7=$(@($arr0Live).Count)"
+Ok 'mechanism: array shape - property NAMES and ORDER survive the round trip' `
+   ((@($m0.arr[0].PSObject.Properties.Name) -join ',') -ceq (@($arr0Live[0].PSObject.Properties.Name) -join ',')) `
+   "PS5.1=$(@($m0.arr[0].PSObject.Properties.Name) -join ',') PS7=$(@($arr0Live[0].PSObject.Properties.Name) -join ',')"
+Ok 'mechanism: array shape - row content is byte-exact after the round trip' ($arr0Ps51Sorted -ceq $arr0LiveSorted) "PS5.1=[$arr0Ps51Sorted] PS7=[$arr0LiveSorted]"
+
+$sum0Live = Compare-CsvData -PreviousCsvPath "$fx\column-order\prev.csv" -CurrentCsvPath "$fx\column-order\curr.csv" -AnchorColumn 'ID' -IncludeSummary
+Ok 'mechanism: -IncludeSummary shape - Changes + Summary keys survive the round trip' `
+   ((($m0.summary.Keys | Sort-Object) -join ',') -ceq (($sum0Live.Keys | Sort-Object) -join ',')) "PS5.1 keys: $(($m0.summary.Keys | Sort-Object) -join ',')"
+Ok 'mechanism: -IncludeSummary shape - nested Adds/Updates/Deletes/Unchanged counts survive the round trip' `
+   ($m0.summary.Summary.Adds -eq $sum0Live.Summary.Adds -and $m0.summary.Summary.Updates -eq $sum0Live.Summary.Updates -and $m0.summary.Summary.Deletes -eq $sum0Live.Summary.Deletes -and $m0.summary.Summary.Unchanged -eq $sum0Live.Summary.Unchanged) `
+   "PS5.1: A=$($m0.summary.Summary.Adds) U=$($m0.summary.Summary.Updates) D=$($m0.summary.Summary.Deletes) N=$($m0.summary.Summary.Unchanged) -- PS7: A=$($sum0Live.Summary.Adds) U=$($sum0Live.Summary.Updates) D=$($sum0Live.Summary.Deletes) N=$($sum0Live.Summary.Unchanged)"
+
+$dupLiveMsg = $null
+try { $null = Compare-CsvData -PreviousCsvPath "$fx\duplicates\prev.csv" -CurrentCsvPath "$fx\duplicates\curr.csv" -AnchorColumn 'ID' }
+catch { $dupLiveMsg = $_.Exception.Message }
+Ok 'mechanism: exception shape - a caught .Message survives the round trip as a labeled ERROR string' `
+   ($m0.thrown -is [string] -and $m0.thrown.StartsWith('ERROR: ')) "type=$($m0.thrown.GetType().Name) value=$($m0.thrown)"
+Ok 'mechanism: exception shape - the marshaled message text is byte-exact with what PS7 throws directly' `
+   ($m0.thrown -ceq "ERROR: $dupLiveMsg") "PS5.1=[$($m0.thrown)] PS7=[ERROR: $dupLiveMsg]"
+
 ""
 "=== 1. output is byte-identical to CompareCSVs_Delta.ps1's own recorded baselines ==="
 "    (exported straight from the return value - no reshaping)"
@@ -38,6 +102,52 @@ foreach ($name in 'sparse','newlines','symmetric','collation','column-order') {
         Ok "$name header + rows match Delta" ($hdr -and $body) "header=$hdr rows=$body"
     } catch { Ok $name $false "THREW: $($_.Exception.Message)" }
 }
+
+"    PS5.1 twin: same five fixtures and baseline comparison,"
+"    computed by a PS5.1 CHILD process and marshaled back - mechanism proven in section 0"
+$ps51_1 = Invoke-OnPS51 @{
+    sparse         = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID'"
+    newlines       = "Compare-CsvData -PreviousCsvPath '$fx\newlines\prev.csv' -CurrentCsvPath '$fx\newlines\curr.csv' -AnchorColumn 'ID'"
+    symmetric      = "Compare-CsvData -PreviousCsvPath '$fx\symmetric\prev.csv' -CurrentCsvPath '$fx\symmetric\curr.csv' -AnchorColumn 'ID'"
+    collation      = "Compare-CsvData -PreviousCsvPath '$fx\collation\prev.csv' -CurrentCsvPath '$fx\collation\curr.csv' -AnchorColumn 'ID'"
+    'column-order' = "Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID'"
+}
+foreach ($name in 'sparse','newlines','symmetric','collation','column-order') {
+    $rows51 = $ps51_1[$name]
+    if ($rows51 -is [string] -and $rows51.StartsWith('ERROR: ')) { Ok "$name header + rows match Delta -- PS5.1" $false $rows51; continue }
+    $mine51 = Join-Path $w "${name}_ps51.csv"
+    $rows51 | Export-Csv -LiteralPath $mine51 -NoTypeInformation -Encoding UTF8
+    $a51 = @(Get-Content $mine51); $b51 = @(Get-Content "$bl\${name}_delta.csv")
+    $hdr51  = $a51[0] -ceq $b51[0]
+    $body51 = (($a51[1..($a51.Count-1)] | Sort-Object) -join "`n") -ceq (($b51[1..($b51.Count-1)] | Sort-Object) -join "`n")
+    Ok "$name header + rows match Delta -- PS5.1" ($hdr51 -and $body51) "header=$hdr51 rows=$body51"
+}
+
+""
+"=== 1b. an embedded multi-line value that actually changes registers as Update (TEST-PLAN-Compare-CsvData.md 1.1) ==="
+"    section 1's newlines/symmetric fixtures carry a multi-line value identical on both sides;"
+"    newline-diff (built for the family's own A8) is the only fixture where it actually differs"
+$mlr = Compare-CsvData -PreviousCsvPath "$fx\newline-diff\prev.csv" -CurrentCsvPath "$fx\newline-diff\curr.csv" -AnchorColumn 'ID' -IncludeSummary
+$ml1 = $mlr.Changes | Where-Object ID -eq '1'
+$ml2 = $mlr.Changes | Where-Object ID -eq '2'
+$ml3 = $mlr.Changes | Where-Object ID -eq '3'
+Ok 'summary: two Updates, one Unchanged control row' ($mlr.Summary.Updates -eq 2 -and $mlr.Summary.Unchanged -eq 1) "U=$($mlr.Summary.Updates) N=$($mlr.Summary.Unchanged)"
+Ok 'a change strictly inside the multi-line value is an Update, full value intact' ($ml1.ChangeType -ceq 'Update' -and $ml1.Notes -ceq "Line1`nLineTHREE") "ChangeType=$($ml1.ChangeType) Notes='$($ml1.Notes)'"
+Ok 'unchanged multi-line value beside a real change still carries its own (unchanged) value' ($ml2.ChangeType -ceq 'Update' -and $ml2.Notes -ceq "Same`nSame2") "ChangeType=$($ml2.ChangeType) Notes='$($ml2.Notes)'"
+Ok 'fully unchanged control row is absent, not present-and-marked' ($null -eq $ml3) "found: $($null -ne $ml3)"
+
+"    PS5.1 twin"
+$ps51_1b = Invoke-OnPS51 @{
+    mlr = "Compare-CsvData -PreviousCsvPath '$fx\newline-diff\prev.csv' -CurrentCsvPath '$fx\newline-diff\curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+}
+$mlr51 = $ps51_1b.mlr
+$ml1_51 = $mlr51.Changes | Where-Object ID -eq '1'
+$ml2_51 = $mlr51.Changes | Where-Object ID -eq '2'
+$ml3_51 = $mlr51.Changes | Where-Object ID -eq '3'
+Ok 'summary: two Updates, one Unchanged control row -- PS5.1' ($mlr51.Summary.Updates -eq 2 -and $mlr51.Summary.Unchanged -eq 1) "U=$($mlr51.Summary.Updates) N=$($mlr51.Summary.Unchanged)"
+Ok 'a change strictly inside the multi-line value is an Update, full value intact -- PS5.1' ($ml1_51.ChangeType -ceq 'Update' -and $ml1_51.Notes -ceq "Line1`nLineTHREE") "ChangeType=$($ml1_51.ChangeType) Notes='$($ml1_51.Notes)'"
+Ok 'unchanged multi-line value beside a real change still carries its own (unchanged) value -- PS5.1' ($ml2_51.ChangeType -ceq 'Update' -and $ml2_51.Notes -ceq "Same`nSame2") "ChangeType=$($ml2_51.ChangeType) Notes='$($ml2_51.Notes)'"
+Ok 'fully unchanged control row is absent, not present-and-marked -- PS5.1' ($null -eq $ml3_51) "found: $($null -ne $ml3_51)"
 
 ""
 "=== 2. return shapes ==="
@@ -59,6 +169,26 @@ $op = W 'op.csv' "ID,dept`r`nE1,Ops`r`n"; $oc = W 'oc.csv' "ID,dept`r`nE1,Sales`
 $one = Compare-CsvData -PreviousCsvPath $op -CurrentCsvPath $oc -AnchorColumn 'ID'
 Ok 'one change stays an array' ($one -is [array] -and $one.Count -eq 1) "type=$($one.GetType().Name) count=$($one.Count)"
 
+"    PS5.1 twin. A Clixml round trip does not preserve the exact"
+"    .NET array type (proven in section 0 - it comes back as ArrayList, not object[]), so these"
+"    check count and shape, the same behavioral guarantee, rather than re-asserting a container type"
+"    that is a property of the marshal channel, not of Compare-CsvData running under PS5.1"
+$ps51_2 = Invoke-OnPS51 @{
+    rows        = "Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID'"
+    summary     = "Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+    singleCount = "@(Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID' -IncludeSummary).Count"
+    zero        = "Compare-CsvData -PreviousCsvPath '$zp' -CurrentCsvPath '$zc' -AnchorColumn 'ID'"
+    one         = "Compare-CsvData -PreviousCsvPath '$op' -CurrentCsvPath '$oc' -AnchorColumn 'ID'"
+}
+Ok 'default returns 3 rows -- PS5.1' (@($ps51_2.rows).Count -eq 3) "count=$(@($ps51_2.rows).Count)"
+Ok 'row carries ChangeType then source columns -- PS5.1' ((@($ps51_2.rows[0].PSObject.Properties.Name) -join ',') -ceq 'ChangeType,Gamma,ID,Alpha,Beta') "$(@($ps51_2.rows[0].PSObject.Properties.Name) -join ',')"
+Ok '-IncludeSummary returns Changes + Summary only -- PS5.1' ((($ps51_2.summary.Keys | Sort-Object) -join ',') -ceq 'Changes,Summary') "keys: $(($ps51_2.summary.Keys | Sort-Object) -join ',')"
+Ok 'summary counts are right -- PS5.1' ($ps51_2.summary.Summary.Adds -eq 1 -and $ps51_2.summary.Summary.Updates -eq 1 -and $ps51_2.summary.Summary.Deletes -eq 1 -and $ps51_2.summary.Summary.Unchanged -eq 1) `
+   "A=$($ps51_2.summary.Summary.Adds) U=$($ps51_2.summary.Summary.Updates) D=$($ps51_2.summary.Summary.Deletes) N=$($ps51_2.summary.Summary.Unchanged)"
+Ok 'plan: single return value -- PS5.1' ($ps51_2.singleCount -eq 1) "got $($ps51_2.singleCount)"
+Ok 'zero changes returns an empty collection, not $null -- PS5.1' ($null -ne $ps51_2.zero -and @($ps51_2.zero).Count -eq 0) "type=$(if($null -eq $ps51_2.zero){'null'}else{$ps51_2.zero.GetType().Name})"
+Ok 'one change stays a one-item collection -- PS5.1' (@($ps51_2.one).Count -eq 1) "count=$(@($ps51_2.one).Count)"
+
 ""
 "=== 3. -CaseSensitive reaches VALUES only, never anchor identity ==="
 $ap = W 'ap.csv' "ID,dept`r`nE1,Ops`r`n"; $ac = W 'ac.csv' "ID,dept`r`ne1,Ops`r`n"
@@ -71,6 +201,20 @@ $vOff = Compare-CsvData -PreviousCsvPath $vp -CurrentCsvPath $vc -AnchorColumn '
 $vOn  = Compare-CsvData -PreviousCsvPath $vp -CurrentCsvPath $vc -AnchorColumn 'ID' -IncludeSummary -CaseSensitive
 Ok 'value Ops/OPS unchanged, switch off' ($vOff.Summary.Unchanged -eq 1) "N=$($vOff.Summary.Unchanged)"
 Ok 'value Ops/OPS is an Update, switch ON' ($vOn.Summary.Updates -eq 1) "U=$($vOn.Summary.Updates) - switch MUST reach values"
+
+"    PS5.1 twin"
+$ps51_3 = Invoke-OnPS51 @{
+    aOff = "Compare-CsvData -PreviousCsvPath '$ap' -CurrentCsvPath '$ac' -AnchorColumn 'ID' -IncludeSummary"
+    aOn  = "Compare-CsvData -PreviousCsvPath '$ap' -CurrentCsvPath '$ac' -AnchorColumn 'ID' -IncludeSummary -CaseSensitive"
+    vOff = "Compare-CsvData -PreviousCsvPath '$vp' -CurrentCsvPath '$vc' -AnchorColumn 'ID' -IncludeSummary"
+    vOn  = "Compare-CsvData -PreviousCsvPath '$vp' -CurrentCsvPath '$vc' -AnchorColumn 'ID' -IncludeSummary -CaseSensitive"
+}
+Ok 'anchor E1/e1 is ONE row, switch off -- PS5.1' ($ps51_3.aOff.Summary.Unchanged -eq 1 -and $ps51_3.aOff.Summary.Adds -eq 0 -and $ps51_3.aOff.Summary.Deletes -eq 0) `
+   "A=$($ps51_3.aOff.Summary.Adds) D=$($ps51_3.aOff.Summary.Deletes) N=$($ps51_3.aOff.Summary.Unchanged)"
+Ok 'anchor E1/e1 is ONE row, switch ON -- PS5.1' ($ps51_3.aOn.Summary.Unchanged -eq 1 -and $ps51_3.aOn.Summary.Adds -eq 0 -and $ps51_3.aOn.Summary.Deletes -eq 0) `
+   "A=$($ps51_3.aOn.Summary.Adds) D=$($ps51_3.aOn.Summary.Deletes) N=$($ps51_3.aOn.Summary.Unchanged) - switch must NOT reach the anchor"
+Ok 'value Ops/OPS unchanged, switch off -- PS5.1' ($ps51_3.vOff.Summary.Unchanged -eq 1) "N=$($ps51_3.vOff.Summary.Unchanged)"
+Ok 'value Ops/OPS is an Update, switch ON -- PS5.1' ($ps51_3.vOn.Summary.Updates -eq 1) "U=$($ps51_3.vOn.Summary.Updates) - switch MUST reach values"
 
 ""
 "=== 4. rejection cases ==="
@@ -92,6 +236,32 @@ Throws 'comma inside a column name still throws' { Compare-CsvData -PreviousCsvP
 $hp = "$fx\column-order\prev.csv"
 $ht = W 'hcase.csv' (([System.IO.File]::ReadAllText("$fx\column-order\curr.csv")) -creplace 'Alpha','alpha')
 Throws 'header differing only in case throws' { Compare-CsvData -PreviousCsvPath $hp -CurrentCsvPath $ht -AnchorColumn 'ID' } 'Column sets differ'
+
+"    PS5.1 twin"
+$ps51_4 = Invoke-OnPS51 @{
+    dup         = "Compare-CsvData -PreviousCsvPath '$fx\duplicates\prev.csv' -CurrentCsvPath '$fx\duplicates\curr.csv' -AnchorColumn 'ID'"
+    hdrOnlyP    = "Compare-CsvData -PreviousCsvPath '$fx\malformed\header_only.csv' -CurrentCsvPath '$fx\malformed\good.csv' -AnchorColumn 'ID'"
+    hdrOnlyC    = "Compare-CsvData -PreviousCsvPath '$fx\malformed\good.csv' -CurrentCsvPath '$fx\malformed\header_only.csv' -AnchorColumn 'ID'"
+    mmCurrent   = "Compare-CsvData -PreviousCsvPath '$fx\mismatched-columns\prev.csv' -CurrentCsvPath '$fx\mismatched-columns\curr.csv' -AnchorColumn 'ID'"
+    mmPrevious  = "Compare-CsvData -PreviousCsvPath '$fx\mismatched-columns\prev_extra.csv' -CurrentCsvPath '$fx\mismatched-columns\curr_extra.csv' -AnchorColumn 'ID'"
+    mmRenamed   = "Compare-CsvData -PreviousCsvPath '$fx\mismatched-columns\prev_renamed.csv' -CurrentCsvPath '$fx\mismatched-columns\curr_renamed.csv' -AnchorColumn 'ID'"
+    caseWrong   = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'id'"
+    absent      = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'Nope'"
+    blankAnchor = "Compare-CsvData -PreviousCsvPath '$bp' -CurrentCsvPath '$bc' -AnchorColumn 'ID'"
+    commaName   = "Compare-CsvData -PreviousCsvPath '$cp' -CurrentCsvPath '$cc' -AnchorColumn 'ID'"
+    caseHeader  = "Compare-CsvData -PreviousCsvPath '$hp' -CurrentCsvPath '$ht' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'duplicate anchor (duplicates fixture) -- PS5.1' $ps51_4.dup 'Duplicate anchor'
+ThrowsPs51 'header-only Previous -- PS5.1'                  $ps51_4.hdrOnlyP 'yielded no rows'
+ThrowsPs51 'header-only Current -- PS5.1'                   $ps51_4.hdrOnlyC 'yielded no rows'
+ThrowsPs51 'mismatch: extra in Current -- PS5.1'  $ps51_4.mmCurrent 'Column sets differ'
+ThrowsPs51 'mismatch: extra in Previous -- PS5.1' $ps51_4.mmPrevious 'Column sets differ'
+ThrowsPs51 'mismatch: renamed column -- PS5.1'    $ps51_4.mmRenamed 'Column sets differ'
+ThrowsPs51 'anchor name cased wrong -- PS5.1'     $ps51_4.caseWrong 'not found'
+ThrowsPs51 'anchor name absent -- PS5.1'          $ps51_4.absent 'not found'
+ThrowsPs51 'blank anchor value in Previous -- PS5.1' $ps51_4.blankAnchor 'is empty'
+ThrowsPs51 'comma inside a column name still throws -- PS5.1' $ps51_4.commaName 'Column sets differ'
+ThrowsPs51 'header differing only in case throws -- PS5.1' $ps51_4.caseHeader 'Column sets differ'
 
 ""
 "=== 5. runs clean under StrictMode 2.0 ==="
@@ -166,6 +336,16 @@ $g3p = W 'g3_p.csv' "ID,dept`r`nE1,Ops`r`n"
 $g3c = W 'g3_c.csv' "ID,dept`r`nE1,Ops`r`nE1,HR`r`n"
 Throws 'duplicate anchor in CURRENT'  { Compare-CsvData -PreviousCsvPath $g3p -CurrentCsvPath $g3c -AnchorColumn 'ID' } 'Duplicate anchor .* in Current'
 
+"    PS5.1 twin"
+$ps51_8 = Invoke-OnPS51 @{
+    blankCurrent = "Compare-CsvData -PreviousCsvPath '$g1p' -CurrentCsvPath '$g1c' -AnchorColumn 'ID'"
+    dupPrevious  = "Compare-CsvData -PreviousCsvPath '$g2p' -CurrentCsvPath '$g2c' -AnchorColumn 'ID'"
+    dupCurrent   = "Compare-CsvData -PreviousCsvPath '$g3p' -CurrentCsvPath '$g3c' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'blank anchor in CURRENT -- PS5.1' $ps51_8.blankCurrent 'is empty in Current'
+ThrowsPs51 'duplicate anchor in PREVIOUS -- PS5.1' $ps51_8.dupPrevious 'Duplicate anchor .* in Previous'
+ThrowsPs51 'duplicate anchor in CURRENT -- PS5.1' $ps51_8.dupCurrent 'Duplicate anchor .* in Current'
+
 ""
 "=== 9. absent-value normalisation (null / empty / whitespace count as equal) ==="
 "    the one deliberate divergence from CompareCSVs_Delta.ps1, previously untested"
@@ -183,6 +363,29 @@ NormCase 'empty vs value -> Update (added)'     ''      'Ops'   $true
 NormCase 'value vs empty -> Update (cleared)'   'Ops'   ''      $true
 NormCase 'value vs value differing -> Update'   'Ops'   'Sales' $true
 
+"    PS5.1 twin. Same six value pairs NormCase builds inline, written to their own files here"
+"    since NormCase's file paths aren't exposed for reuse across a process boundary"
+$n1p = W 'n51_1_p.csv' "ID,A,B`r`nE1,,keep`r`n";           $n1c = W 'n51_1_c.csv' "ID,A,B`r`nE1,,keep`r`n"
+$n2p = W 'n51_2_p.csv' "ID,A,B`r`nE1,`"   `",keep`r`n";    $n2c = W 'n51_2_c.csv' "ID,A,B`r`nE1,,keep`r`n"
+$n3p = W 'n51_3_p.csv' "ID,A,B`r`nE1,`" `",keep`r`n";      $n3c = W 'n51_3_c.csv' "ID,A,B`r`nE1,`"    `",keep`r`n"
+$n4p = W 'n51_4_p.csv' "ID,A,B`r`nE1,,keep`r`n";           $n4c = W 'n51_4_c.csv' "ID,A,B`r`nE1,Ops,keep`r`n"
+$n5p = W 'n51_5_p.csv' "ID,A,B`r`nE1,Ops,keep`r`n";        $n5c = W 'n51_5_c.csv' "ID,A,B`r`nE1,,keep`r`n"
+$n6p = W 'n51_6_p.csv' "ID,A,B`r`nE1,Ops,keep`r`n";        $n6c = W 'n51_6_c.csv' "ID,A,B`r`nE1,Sales,keep`r`n"
+$ps51_9 = Invoke-OnPS51 @{
+    c1 = "Compare-CsvData -PreviousCsvPath '$n1p' -CurrentCsvPath '$n1c' -AnchorColumn 'ID' -IncludeSummary"
+    c2 = "Compare-CsvData -PreviousCsvPath '$n2p' -CurrentCsvPath '$n2c' -AnchorColumn 'ID' -IncludeSummary"
+    c3 = "Compare-CsvData -PreviousCsvPath '$n3p' -CurrentCsvPath '$n3c' -AnchorColumn 'ID' -IncludeSummary"
+    c4 = "Compare-CsvData -PreviousCsvPath '$n4p' -CurrentCsvPath '$n4c' -AnchorColumn 'ID' -IncludeSummary"
+    c5 = "Compare-CsvData -PreviousCsvPath '$n5p' -CurrentCsvPath '$n5c' -AnchorColumn 'ID' -IncludeSummary"
+    c6 = "Compare-CsvData -PreviousCsvPath '$n6p' -CurrentCsvPath '$n6c' -AnchorColumn 'ID' -IncludeSummary"
+}
+Ok 'empty vs empty -> unchanged -- PS5.1' ($ps51_9.c1.Summary.Updates -eq 0) "U=$($ps51_9.c1.Summary.Updates) N=$($ps51_9.c1.Summary.Unchanged)"
+Ok 'whitespace vs empty -> unchanged -- PS5.1' ($ps51_9.c2.Summary.Updates -eq 0) "U=$($ps51_9.c2.Summary.Updates) N=$($ps51_9.c2.Summary.Unchanged)"
+Ok 'whitespace vs whitespace -> unchanged -- PS5.1' ($ps51_9.c3.Summary.Updates -eq 0) "U=$($ps51_9.c3.Summary.Updates) N=$($ps51_9.c3.Summary.Unchanged)"
+Ok 'empty vs value -> Update (added) -- PS5.1' ($ps51_9.c4.Summary.Updates -eq 1) "U=$($ps51_9.c4.Summary.Updates) N=$($ps51_9.c4.Summary.Unchanged)"
+Ok 'value vs empty -> Update (cleared) -- PS5.1' ($ps51_9.c5.Summary.Updates -eq 1) "U=$($ps51_9.c5.Summary.Updates) N=$($ps51_9.c5.Summary.Unchanged)"
+Ok 'value vs value differing -> Update -- PS5.1' ($ps51_9.c6.Summary.Updates -eq 1) "U=$($ps51_9.c6.Summary.Updates) N=$($ps51_9.c6.Summary.Unchanged)"
+
 ""
 "=== 10. a ragged row does not manufacture a false Update ==="
 "    Import-Csv gives `$null for a short row's missing trailing field; `$null -ne '' without"
@@ -195,6 +398,14 @@ $r2p = W 'r2_p.csv' "ID,A,B`r`nE1,x,HR`r`n"
 $r2c = W 'r2_c.csv' "ID,A,B`r`nE1,x`r`n"
 $rr2 = Compare-CsvData -PreviousCsvPath $r2p -CurrentCsvPath $r2c -AnchorColumn 'ID' -IncludeSummary
 Ok 'short row against a real value is still an Update' ($rr2.Summary.Updates -eq 1) "U=$($rr2.Summary.Updates) - a cleared value must still register"
+
+"    PS5.1 twin"
+$ps51_10 = Invoke-OnPS51 @{
+    ragged1 = "Compare-CsvData -PreviousCsvPath '$rp' -CurrentCsvPath '$rc' -AnchorColumn 'ID' -IncludeSummary"
+    ragged2 = "Compare-CsvData -PreviousCsvPath '$r2p' -CurrentCsvPath '$r2c' -AnchorColumn 'ID' -IncludeSummary"
+}
+Ok 'short row vs empty cell is Unchanged -- PS5.1' ($ps51_10.ragged1.Summary.Unchanged -eq 1 -and $ps51_10.ragged1.Summary.Updates -eq 0) "U=$($ps51_10.ragged1.Summary.Updates) N=$($ps51_10.ragged1.Summary.Unchanged)"
+Ok 'short row against a real value is still an Update -- PS5.1' ($ps51_10.ragged2.Summary.Updates -eq 1) "U=$($ps51_10.ragged2.Summary.Updates) - a cleared value must still register"
 
 ""
 "=== 11. verdict-column collision (found by independent review, 2026-08-19) ==="
@@ -216,6 +427,21 @@ Throws 'blank -ChangeTypeColumnName rejected' { Compare-CsvData -PreviousCsvPath
 # The default name must still be what Delta emits.
 $dv = Compare-CsvData -PreviousCsvPath "$fx\column-order\prev.csv" -CurrentCsvPath "$fx\column-order\curr.csv" -AnchorColumn 'ID'
 Ok 'default verdict column is still ChangeType' ((@($dv[0].PSObject.Properties.Name)[0]) -ceq 'ChangeType') "$(@($dv[0].PSObject.Properties.Name)[0])"
+
+"    PS5.1 twin"
+$ps51_11 = Invoke-OnPS51 @{
+    collision      = "Compare-CsvData -PreviousCsvPath '$vp' -CurrentCsvPath '$vc' -AnchorColumn 'ID'"
+    collisionLower = "Compare-CsvData -PreviousCsvPath '$lp' -CurrentCsvPath '$lc' -AnchorColumn 'ID'"
+    renamed        = "Compare-CsvData -PreviousCsvPath '$vp' -CurrentCsvPath '$vc' -AnchorColumn 'ID' -ChangeTypeColumnName '$anyName'"
+    blankName      = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -ChangeTypeColumnName '   '"
+    defaultCol     = "Compare-CsvData -PreviousCsvPath '$fx\column-order\prev.csv' -CurrentCsvPath '$fx\column-order\curr.csv' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'source column ChangeType is rejected -- PS5.1' $ps51_11.collision 'collides with the verdict column'
+ThrowsPs51 'lowercase changetype also rejected -- PS5.1' $ps51_11.collisionLower 'collides with the verdict column'
+Ok '-ChangeTypeColumnName resolves the collision -- PS5.1' ((@($ps51_11.renamed[0].PSObject.Properties.Name) -join ',') -ceq "$anyName,ID,ChangeType,dept") "$(@($ps51_11.renamed[0].PSObject.Properties.Name) -join ',')"
+Ok 'renamed verdict still carries the verdict -- PS5.1' ($ps51_11.renamed[0].$anyName -ceq 'Update' -and $ps51_11.renamed[0].ChangeType -ceq 'Active') "$anyName=$($ps51_11.renamed[0].$anyName) ChangeType=$($ps51_11.renamed[0].ChangeType)"
+ThrowsPs51 'blank -ChangeTypeColumnName rejected -- PS5.1' $ps51_11.blankName 'cannot be empty or whitespace'
+Ok 'default verdict column is still ChangeType -- PS5.1' ((@($ps51_11.defaultCol[0].PSObject.Properties.Name)[0]) -ceq 'ChangeType') "$(@($ps51_11.defaultCol[0].PSObject.Properties.Name)[0])"
 
 ""
 "=== 12. padded anchor values (found by independent review, 2026-08-19) ==="
@@ -241,6 +467,20 @@ $vc2 = W 'pad_v_c.csv' "ID,dept`r`nE1,Ops`r`n"
 $vr2 = Compare-CsvData -PreviousCsvPath $vp2 -CurrentCsvPath $vc2 -AnchorColumn 'ID' -IncludeSummary
 Ok 'a padded VALUE is still a real difference' ($vr2.Summary.Updates -eq 1) "U=$($vr2.Summary.Updates) - values must not be trimmed"
 
+"    PS5.1 twin"
+$ps51_12 = Invoke-OnPS51 @{
+    padAnchor = "Compare-CsvData -PreviousCsvPath '$pp' -CurrentCsvPath '$pc' -AnchorColumn 'ID' -IncludeSummary"
+    padDelete = "Compare-CsvData -PreviousCsvPath '$dp' -CurrentCsvPath '$dc' -AnchorColumn 'ID'"
+    padDup    = "Compare-CsvData -PreviousCsvPath '$sp' -CurrentCsvPath '$sc' -AnchorColumn 'ID'"
+    padValue  = "Compare-CsvData -PreviousCsvPath '$vp2' -CurrentCsvPath '$vc2' -AnchorColumn 'ID' -IncludeSummary"
+}
+Ok 'padded anchor is ONE row, not Add+Delete -- PS5.1' ($ps51_12.padAnchor.Summary.Unchanged -eq 2 -and $ps51_12.padAnchor.Summary.Adds -eq 0 -and $ps51_12.padAnchor.Summary.Deletes -eq 0) `
+   "A=$($ps51_12.padAnchor.Summary.Adds) D=$($ps51_12.padAnchor.Summary.Deletes) N=$($ps51_12.padAnchor.Summary.Unchanged)"
+$del51 = @($ps51_12.padDelete) | Where-Object ChangeType -eq 'Delete'
+Ok 'a Delete row keeps the untrimmed anchor value -- PS5.1' ($del51.ID -ceq ' E9 ') "got '$($del51.ID)'"
+ThrowsPs51 'padded + unpadded in one file is a duplicate -- PS5.1' $ps51_12.padDup 'Duplicate anchor'
+Ok 'a padded VALUE is still a real difference -- PS5.1' ($ps51_12.padValue.Summary.Updates -eq 1) "U=$($ps51_12.padValue.Summary.Updates) - values must not be trimmed"
+
 ""
 "=== 13. a bad -ExpectedColumns blames the declaration, not the file ==="
 "    every case below uses two perfectly correct files"
@@ -264,6 +504,22 @@ try { $null = Compare-CsvData -PreviousCsvPath $mp -CurrentCsvPath $mc -AnchorCo
       Ok 'file-vs-file message quotes names too' $false 'did not throw' }
 catch { Ok 'file-vs-file message quotes names too' ($_.Exception.Message -match "'ID' \| 'Name'") "$($_.Exception.Message)" }
 
+"    PS5.1 twin"
+$ps51_13 = Invoke-OnPS51 @{
+    wsEntry    = "Compare-CsvData -PreviousCsvPath '$ep' -CurrentCsvPath '$ec' -AnchorColumn 'ID' -ExpectedColumns 'ID','Name','   '"
+    dupEntry   = "Compare-CsvData -PreviousCsvPath '$ep' -CurrentCsvPath '$ec' -AnchorColumn 'ID' -ExpectedColumns 'ID','Name','Name'"
+    caseDup    = "Compare-CsvData -PreviousCsvPath '$ep' -CurrentCsvPath '$ec' -AnchorColumn 'ID' -ExpectedColumns 'ID','Name','name'"
+    beforeRead = "Compare-CsvData -PreviousCsvPath '$nope' -CurrentCsvPath '$nope' -AnchorColumn 'ID' -ExpectedColumns 'ID','   '"
+    paddedName = "Compare-CsvData -PreviousCsvPath '$ep' -CurrentCsvPath '$ec' -AnchorColumn 'ID' -ExpectedColumns 'ID',' Name'"
+    fileVsFile = "Compare-CsvData -PreviousCsvPath '$mp' -CurrentCsvPath '$mc' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'whitespace-only entry names itself -- PS5.1' $ps51_13.wsEntry 'empty or whitespace-only entry'
+ThrowsPs51 'duplicated entry names the duplicate -- PS5.1' $ps51_13.dupEntry "'Name' twice"
+ThrowsPs51 'case-only duplicate is caught too -- PS5.1' $ps51_13.caseDup "'Name' and 'name'"
+ThrowsPs51 'declaration validated before any file read -- PS5.1' $ps51_13.beforeRead 'empty or whitespace-only entry'
+ThrowsPs51 'a padded name is visible in the message -- PS5.1' $ps51_13.paddedName "' Name'"
+ThrowsPs51 'file-vs-file message quotes names too -- PS5.1' $ps51_13.fileVsFile "'ID' \| 'Name'"
+
 ""
 "=== 14. round-2 review findings ==="
 # The collision check must trim both sides, as CompareCSVs_Delta.ps1:455-456 does. Without it a
@@ -284,6 +540,18 @@ try { $null = Compare-CsvData -PreviousCsvPath $sp2 -CurrentCsvPath $sc2 -Anchor
       Ok 'plain duplicate keeps the simple message' $false 'did not throw' }
 catch { Ok 'plain duplicate keeps the simple message' ($_.Exception.Message -match "^Duplicate anchor 'E9' in Current") "$($_.Exception.Message)" }
 
+"    PS5.1 twin"
+$ps51_14 = Invoke-OnPS51 @{
+    paddedCollide = "Compare-CsvData -PreviousCsvPath '$tp' -CurrentCsvPath '$tc' -AnchorColumn 'ID' -ChangeTypeColumnName 'ChangeType '"
+    paddedDup     = "Compare-CsvData -PreviousCsvPath '$qp' -CurrentCsvPath '$qc' -AnchorColumn 'ID'"
+    plainDup      = "Compare-CsvData -PreviousCsvPath '$sp2' -CurrentCsvPath '$sc2' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'padded -ChangeTypeColumnName still collides -- PS5.1' $ps51_14.paddedCollide 'collides with the verdict column'
+Ok 'padding-caused duplicate names both spellings -- PS5.1' `
+   ($ps51_14.paddedDup -is [string] -and $ps51_14.paddedDup.StartsWith('ERROR: ') -and $ps51_14.paddedDup -match "'  E7  '" -and $ps51_14.paddedDup -match "'E7'") `
+   "value='$($ps51_14.paddedDup)'"
+ThrowsPs51 'plain duplicate keeps the simple message -- PS5.1' $ps51_14.plainDup "^ERROR: Duplicate anchor 'E9' in Current"
+
 ""
 "=== 14b. a collision message must not blame the wrong mechanism (round 3) ==="
 # The both-spellings wording was written for padding and inherited by the case path, which said
@@ -302,6 +570,18 @@ catch {
     $m = $_.Exception.Message
     Ok 'case-only declared duplicate shows both spellings' (($m -match "'dept'") -and ($m -match "'DEPT'")) "$m"
 }
+
+"    PS5.1 twin"
+$ps51_14b = Invoke-OnPS51 @{
+    caseDupMsg  = "Compare-CsvData -PreviousCsvPath '$kp' -CurrentCsvPath '$kc' -AnchorColumn 'ID'"
+    caseDeclDup = "Compare-CsvData -PreviousCsvPath '$kp' -CurrentCsvPath '$kp' -AnchorColumn 'ID' -ExpectedColumns 'ID','dept','DEPT'"
+}
+Ok 'case-only duplicate does not blame trimming -- PS5.1' `
+   ($ps51_14b.caseDupMsg -is [string] -and $ps51_14b.caseDupMsg.StartsWith('ERROR: ') -and $ps51_14b.caseDupMsg -notmatch 'once trimmed' -and $ps51_14b.caseDupMsg -match "'e7'" -and $ps51_14b.caseDupMsg -match "'E7'") `
+   "value='$($ps51_14b.caseDupMsg)'"
+Ok 'case-only declared duplicate shows both spellings -- PS5.1' `
+   ($ps51_14b.caseDeclDup -is [string] -and $ps51_14b.caseDeclDup.StartsWith('ERROR: ') -and $ps51_14b.caseDeclDup -match "'dept'" -and $ps51_14b.caseDeclDup -match "'DEPT'") `
+   "value='$($ps51_14b.caseDeclDup)'"
 
 ""
 "=== 14c. an invented column name must not ship (round 4) ==="
@@ -328,6 +608,18 @@ Ok 'still rejected under $WarningPreference=SilentlyContinue' ("$suppressed" -ma
 $okRun2 = Compare-CsvData -PreviousCsvPath "$fx\sparse\prev.csv" -CurrentCsvPath "$fx\sparse\curr.csv" -AnchorColumn 'ID'
 Ok 'a clean file is unaffected' ($okRun2.Count -gt 0) "rows=$($okRun2.Count)"
 
+"    PS5.1 twin. Check 4 (spawns pwsh directly to test `$WarningPreference) gets no naive twin here -"
+"    it becomes a real two-host loop later, matching sections 5 and 7's own shape"
+$ps51_14c = Invoke-OnPS51 @{
+    blankName    = "Compare-CsvData -PreviousCsvPath '$ip' -CurrentCsvPath '$ic' -AnchorColumn 'ID'"
+    blankCurrent = "Compare-CsvData -PreviousCsvPath '$jp' -CurrentCsvPath '$jc' -AnchorColumn 'ID'"
+    clean        = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID'"
+}
+ThrowsPs51 'blank column name is rejected -- PS5.1' $ps51_14c.blankName 'not parsed cleanly'
+ThrowsPs51 'the message names the invented-name cause -- PS5.1' $ps51_14c.blankName "such as 'H1'"
+ThrowsPs51 'blank column name in Current is rejected -- PS5.1' $ps51_14c.blankCurrent 'Current file was not parsed cleanly'
+Ok 'a clean file is unaffected -- PS5.1' (@($ps51_14c.clean).Count -gt 0) "rows=$(@($ps51_14c.clean).Count)"
+
 ""
 "=== 15. runs inside a host that sets its own preferences ==="
 # StrictMode, ErrorActionPreference and PSDefaultParameterValues all set by the caller, as they
@@ -347,11 +639,70 @@ foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
 }
 
 ""
+"=== 16. CRLF- and LF-terminated input carrying identical content produce identical results (TEST-PLAN-Compare-CsvData.md 1.2) ==="
+'    every fixture this suite builds inline uses `r`n literally - only tests/fixtures/terminators/'
+"    carries genuine LF-only content reaching Import-Csv through this harness"
+$crlfR = Compare-CsvData -PreviousCsvPath "$fx\terminators\crlf_prev.csv" -CurrentCsvPath "$fx\terminators\crlf_curr.csv" -AnchorColumn 'ID' -IncludeSummary
+$lfR   = Compare-CsvData -PreviousCsvPath "$fx\terminators\lf_prev.csv"   -CurrentCsvPath "$fx\terminators\lf_curr.csv"   -AnchorColumn 'ID' -IncludeSummary
+Ok 'CRLF and LF summaries agree' ($crlfR.Summary.Adds -eq $lfR.Summary.Adds -and $crlfR.Summary.Updates -eq $lfR.Summary.Updates -and $crlfR.Summary.Deletes -eq $lfR.Summary.Deletes -and $crlfR.Summary.Unchanged -eq $lfR.Summary.Unchanged) `
+   "crlf: A=$($crlfR.Summary.Adds) U=$($crlfR.Summary.Updates) D=$($crlfR.Summary.Deletes) N=$($crlfR.Summary.Unchanged) -- lf: A=$($lfR.Summary.Adds) U=$($lfR.Summary.Updates) D=$($lfR.Summary.Deletes) N=$($lfR.Summary.Unchanged)"
+$crlfSorted = ($crlfR.Changes | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+$lfSorted   = ($lfR.Changes   | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+Ok 'CRLF and LF rows are content-identical (order-insensitive)' ($crlfSorted -ceq $lfSorted) "crlf=[$crlfSorted] lf=[$lfSorted]"
+
+""
+"=== 17. an accented (non-ASCII) value compares correctly (TEST-PLAN-Compare-CsvData.md 2.1) ==="
+"    narrower than the family's A2: -Encoding here is mandatory UTF8-only, so there is no ANSI"
+"    mis-decode trap to catch - what's untested is whether an accented value works at all through"
+"    Import-Csv and the function's own anchor lookup and value comparison"
+$accCafe  = 'Caf' + [char]0xE9         # Cafe (accented) - built from a char code, keeps this .ps1 pure ASCII
+$accCreme = 'Cr' + [char]0xE8 + 'me'   # Creme (accented, different character)
+$acp = W 'acc_p.csv' "ID,Name`r`n$accCafe,x`r`nE2,$accCafe`r`n"
+$acc = W 'acc_c.csv' "ID,Name`r`n$accCafe,x`r`nE2,$accCreme`r`n"
+$accR = Compare-CsvData -PreviousCsvPath $acp -CurrentCsvPath $acc -AnchorColumn 'ID' -IncludeSummary
+Ok 'an accented anchor value matches itself, unchanged' ($accR.Summary.Unchanged -eq 1) "N=$($accR.Summary.Unchanged)"
+$accUpd = $accR.Changes | Where-Object ID -eq 'E2'
+Ok 'a value changing between two accented values registers as Update, byte-exact' ($accUpd.ChangeType -ceq 'Update' -and $accUpd.Name -ceq $accCreme) "ChangeType=$($accUpd.ChangeType) Name='$($accUpd.Name)'"
+
+""
+"=== 18. a literal 0-byte file is rejected with a message distinguishable from a header-only"
+"    file's rejection (TEST-PLAN-Compare-CsvData.md 2.2) ==="
+"    Import-Csv leaves both silent with Count=0 - Compare-CsvData.ps1 now checks file length"
+"    directly, inside the existing zero-row branch, so a missing file's own error path is untouched"
+$zeroFile = Join-Path $w 'zero_18.csv'
+[System.IO.File]::WriteAllBytes($zeroFile, @())
+$headerOnlyFile = W 'header_only_18.csv' "ID,dept`r`n"
+$goodFile18 = W 'good_18.csv' "ID,dept`r`nE1,Ops`r`n"
+Throws '0-byte Previous: distinct empty-file message' { Compare-CsvData -PreviousCsvPath $zeroFile -CurrentCsvPath $goodFile18 -AnchorColumn 'ID' } 'Previous file is empty; no header line found'
+Throws '0-byte Current: distinct empty-file message'  { Compare-CsvData -PreviousCsvPath $goodFile18 -CurrentCsvPath $zeroFile -AnchorColumn 'ID' } 'Current file is empty; no header line found'
+Throws 'header-only Previous: stays the OTHER message' { Compare-CsvData -PreviousCsvPath $headerOnlyFile -CurrentCsvPath $goodFile18 -AnchorColumn 'ID' } 'Previous file yielded no rows'
+Throws 'header-only Current: stays the OTHER message'  { Compare-CsvData -PreviousCsvPath $goodFile18 -CurrentCsvPath $headerOnlyFile -AnchorColumn 'ID' } 'Current file yielded no rows'
+
+""
+"=== 19. a decorated path still works, and a missing input file is rejected clearly"
+"    (TEST-PLAN-Compare-CsvData.md 2.3, mirrors the family's Group E) ==="
+"    the function passes -LiteralPath to Import-Csv, so this should work by construction - never"
+"    actually checked until now"
+$decoRoot = Join-Path $w "deco [b] caf$([char]0xE9)"
+if (Test-Path -LiteralPath $decoRoot) { Remove-Item -LiteralPath $decoRoot -Recurse -Force }
+New-Item -ItemType Directory -Force $decoRoot | Out-Null
+$decoPrev = Join-Path $decoRoot 'prev.csv'; $decoCurr = Join-Path $decoRoot 'curr.csv'
+Copy-Item -LiteralPath "$fx\sparse\prev.csv" -Destination $decoPrev -Force
+Copy-Item -LiteralPath "$fx\sparse\curr.csv" -Destination $decoCurr -Force
+$ctrl19 = Compare-CsvData -PreviousCsvPath "$fx\sparse\prev.csv" -CurrentCsvPath "$fx\sparse\curr.csv" -AnchorColumn 'ID' -IncludeSummary
+$deco19 = Compare-CsvData -PreviousCsvPath $decoPrev -CurrentCsvPath $decoCurr -AnchorColumn 'ID' -IncludeSummary
+$ctrlSorted19 = ($ctrl19.Changes | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+$decoSorted19 = ($deco19.Changes | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+Ok 'a path decorated with [ ], and a non-ASCII character, is content-identical to an undecorated run' `
+   ($decoSorted19 -ceq $ctrlSorted19 -and $deco19.Summary.Total -eq $ctrl19.Summary.Total) "decoTotal=$($deco19.Summary.Total) ctrlTotal=$($ctrl19.Summary.Total)"
+Throws 'a missing input file is rejected with a clear, file-naming message' { Compare-CsvData -PreviousCsvPath (Join-Path $w 'e19_missing_input.csv') -CurrentCsvPath $decoCurr -AnchorColumn 'ID' } 'Could not find file'
+
+""
 # A check that silently stops running is worse than one that fails - assert the denominator, the
 # same discipline the repo's own verification harnesses hold themselves to.
 # Counted BEFORE this assertion runs, so the total printed below is this number plus one.
 # Update it deliberately when adding a check - that is the point.
-$expected = 80
+$expected = 168
 Ok "all $expected preceding checks ran (guards against a check vanishing)" (($pass + $fail) -eq $expected) "ran $($pass + $fail)"
 
 ""

@@ -113,6 +113,7 @@ guarantee:
 | 5 million | 100,000 | 480 MB / ~31 s | 950 MB / 1.5x | 480 MB / 1.2x | 200 MB / 6x | 480 MB / 5x |
 | 7.5 million | 150,000 | 680 MB / ~45 s | 1.4 GB / 1.5x | 680 MB / 1.2x | 210 MB / 6x | 680 MB / 5x |
 | 10 million | 200,000 | 900 MB / ~60 s | 1.9 GB / 1.5x | 900 MB / 1.2x | 220 MB / 6x | 900 MB / 5x |
+| 30 million | 600,000 | 2.5 GB / ~178 s | 5.4 GB / 1.5x | 2.5 GB / 1.2x | 230 MB / 6.5x | 2.5 GB / 5x |
 
 - `Delta` is the fastest at every size measured — its column gives the real seconds; every other
   column is a multiple of it.
@@ -288,44 +289,49 @@ above for why. Every other column is populated on every row.
 Rows per sort chunk, default 25,000, accepted range **1 to 1000000**. A value outside that is
 rejected before the run starts. At most this many rows are held in memory at once.
 
-**The default costs about 215 MB above what PowerShell itself uses** — roughly 280-290 MB total. If
+**The default costs about 207 MB above what PowerShell itself uses** — roughly 275-285 MB total. If
 that fits, leave it alone. It also keeps `large` single-pass, with no extra merge pass over the data,
 up to **800,000 rows**.
 
 **Go lower if memory is genuinely tight**, or the row is very wide. A smaller chunk still works; it
 just pays an extra full pass over the data once the file exceeds `rows / 32` (below), which costs
 time and temporary disk, not correctness. Measured on a 200,000-row file, `-BatchSize 1000` took
-**49% longer and used 50% more temporary disk** than `6250` did.
+**40% longer and used 52% more temporary disk** than `6250` did.
 
 **Go higher only past 800,000 rows, and only to stay single-pass: set it to about `rows / 32`.** That
 is where `large` merges its temporary files in one pass; higher buys nothing — on the same
-200,000-row file, raising the chunk from 25,000 to 100,000 quadrupled memory and ran slightly
-*slower*. A chunk big enough to hold the whole file defeats the script: `large` then uses as much
-memory as an in-memory comparison and still writes every row to disk.
+200,000-row file, raising the chunk from 25,000 to 100,000 more than tripled memory (3.4x) and ran
+slightly *slower*. A chunk big enough to hold the whole file defeats the script: `large` then uses as
+much memory as an in-memory comparison and still writes every row to disk.
 
 Chunk memory depends on the chunk size and the width of a row, **not** on how big the file is — a
 given `-BatchSize` costs the same on a 100,000-row file as on a 200,000-row one. Measured on 50
-columns of 20-30 characters, about 1.2 KB per row:
+columns of 20-30 characters, about 1.2 KB per row, both PowerShell versions, 2026-08-21:
 
-| `-BatchSize` | memory |
-|---|---|
-| 6,000 | ~100 MB |
-| 25,000 | ~215 MB (default) |
-| 40,000 | ~300 MB |
-| 80,000 | ~600 MB |
-| 125,000 | ~900 MB |
+| `-BatchSize` | PS7 | PS5.1 |
+|---|---|---|
+| 1,000 | 72 MB | 126 MB |
+| 6,250 | 98 MB | 98 MB |
+| 12,500 | 125 MB | 148 MB |
+| 25,000 (default) | 207 MB | 247 MB |
+| 50,000 | 408 MB | 357 MB |
+| 100,000 | 714 MB | 604 MB |
+| 200,000 | 1.5 GB | 1.0 GB |
+
+PS5.1 runs higher than PS7 at small chunk sizes and lower at large ones, crossing over somewhere near
+50,000 — worth knowing if you're tuning this on a machine that only has PowerShell 5.1.
 
 Narrower data costs less, but not proportionally — about 49 MB is fixed overhead that doesn't shrink
 with column count:
 
-| columns | memory at `-BatchSize 25,000` |
+| columns | memory at `-BatchSize 25,000`, PS7 |
 |---|---|
-| 50 (20-30 chars) | 214 MB |
+| 50 (20-30 chars) | 207 MB |
 | 30 (15-25 chars) | 148 MB |
 | 10 (~10 chars) | 82 MB |
 
 Check `rows / 32` against the `-BatchSize` table before going higher — a 1,000,000-row file wants
-31,250, roughly 260 MB at this width.
+31,250, roughly 255 MB at this width.
 
 `large` also needs free space in `-OutputFolder` while it runs — **about 2.2x the combined size of
 both inputs** single-pass, roughly **3.3x** below `rows / 32`, since each merge pass leaves its
