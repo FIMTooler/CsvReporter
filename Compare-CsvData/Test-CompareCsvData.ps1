@@ -265,8 +265,11 @@ ThrowsPs51 'header differing only in case throws -- PS5.1' $ps51_4.caseHeader 'C
 
 ""
 "=== 5. runs clean under StrictMode 2.0 ==="
-$strict = & pwsh -NoProfile -Command "Set-StrictMode -Version 2.0; . '$PSScriptRoot\Compare-CsvData.ps1'; (Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -Encoding UTF8 -DelimiterName comma).Count" 2>&1
-Ok 'StrictMode 2.0' ("$strict" -match '^\d+$') "output: $strict"
+$strictProbe = "Set-StrictMode -Version 2.0; . '$PSScriptRoot\Compare-CsvData.ps1'; (Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -Encoding UTF8 -DelimiterName comma).Count"
+foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
+    $strict = & $hostExe[1] -NoProfile -Command $strictProbe 2>&1
+    Ok "StrictMode 2.0 -- PS$($hostExe[0])" ("$strict" -match '^\d+$') "output: $strict"
+}
 
 ""
 "=== 6. a claim this design makes about the SOURCE script ==="
@@ -309,18 +312,22 @@ Throws 'an unsupported delimiter name is rejected' { Compare-CsvData -PreviousCs
 ""
 "=== 7. -Encoding is genuinely mandatory and genuinely restricted ==="
 "    (the harness supplies it via `$PSDefaultParameterValues, so prove it is still enforced)"
-$probe = & pwsh -NoProfile -Command @"
+$ansiProbe = @"
 . '$PSScriptRoot\Compare-CsvData.ps1'
 try { `$null = Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -DelimiterName comma -Encoding ansi -ErrorAction Stop; 'ACCEPTED' }
 catch { 'REJECTED: ' + `$_.Exception.Message }
-"@ 2>&1
-Ok '-Encoding ansi is rejected' ("$probe" -match 'REJECTED') "$probe"
-$mand = & pwsh -NoProfile -NonInteractive -Command @"
+"@
+$mandProbe = @"
 . '$PSScriptRoot\Compare-CsvData.ps1'
 try { `$null = Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -DelimiterName comma -ErrorAction Stop; 'ACCEPTED' }
 catch { 'BLOCKED' }
-"@ 2>&1
-Ok '-Encoding cannot be omitted' ("$mand" -notmatch 'ACCEPTED') "$mand"
+"@
+foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
+    $probe = & $hostExe[1] -NoProfile -Command $ansiProbe 2>&1
+    Ok "-Encoding ansi is rejected -- PS$($hostExe[0])" ("$probe" -match 'REJECTED') "$probe"
+    $mand = & $hostExe[1] -NoProfile -NonInteractive -Command $mandProbe 2>&1
+    Ok "-Encoding cannot be omitted -- PS$($hostExe[0])" ("$mand" -notmatch 'ACCEPTED') "$mand"
+}
 
 ""
 "=== 8. both sides of every per-row check ==="
@@ -597,19 +604,22 @@ $jc = W 'j_c.csv' "ID, ,dept`r`nE1,x,Ops`r`n"
 Throws 'blank column name in Current is rejected' { Compare-CsvData -PreviousCsvPath $jp -CurrentCsvPath $jc -AnchorColumn 'ID' } 'Current file was not parsed cleanly'
 # And it must still fire when the host has suppressed warnings entirely - the case that made this
 # silent in the first place.
-$suppressed = & pwsh -NoProfile -NonInteractive -Command @"
+$suppressedProbe = @"
 `$WarningPreference = 'SilentlyContinue'
 . '$PSScriptRoot\Compare-CsvData.ps1'
 try { `$null = Compare-CsvData -PreviousCsvPath '$ip' -CurrentCsvPath '$ic' -AnchorColumn 'ID' -Encoding UTF8 -DelimiterName comma; 'SHIPPED' }
 catch { 'THREW' }
-"@ 2>&1
-Ok 'still rejected under $WarningPreference=SilentlyContinue' ("$suppressed" -match 'THREW') "$suppressed"
+"@
+foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
+    $suppressed = & $hostExe[1] -NoProfile -NonInteractive -Command $suppressedProbe 2>&1
+    Ok "still rejected under `$WarningPreference=SilentlyContinue -- PS$($hostExe[0])" ("$suppressed" -match 'THREW') "$suppressed"
+}
 # A clean file must not trip it.
 $okRun2 = Compare-CsvData -PreviousCsvPath "$fx\sparse\prev.csv" -CurrentCsvPath "$fx\sparse\curr.csv" -AnchorColumn 'ID'
 Ok 'a clean file is unaffected' ($okRun2.Count -gt 0) "rows=$($okRun2.Count)"
 
-"    PS5.1 twin. Check 4 (spawns pwsh directly to test `$WarningPreference) gets no naive twin here -"
-"    it becomes a real two-host loop later, matching sections 5 and 7's own shape"
+"    PS5.1 twin. Check 4 (`$WarningPreference) is already its own two-host loop above,"
+"    matching sections 5 and 7's shape - not duplicated again here"
 $ps51_14c = Invoke-OnPS51 @{
     blankName    = "Compare-CsvData -PreviousCsvPath '$ip' -CurrentCsvPath '$ic' -AnchorColumn 'ID'"
     blankCurrent = "Compare-CsvData -PreviousCsvPath '$jp' -CurrentCsvPath '$jc' -AnchorColumn 'ID'"
@@ -624,6 +634,10 @@ Ok 'a clean file is unaffected -- PS5.1' (@($ps51_14c.clean).Count -gt 0) "rows=
 "=== 15. runs inside a host that sets its own preferences ==="
 # StrictMode, ErrorActionPreference and PSDefaultParameterValues all set by the caller, as they
 # would be in a real script. Previously only StrictMode was covered, and only in isolation.
+# Tightened from a loose 'rows=\d+ total=\d+' pattern match to the real counts, computed once
+# here directly, so a wrong number can no longer pass as long as it merely looks like a number.
+$sparseLive15 = Compare-CsvData -PreviousCsvPath "$fx\sparse\prev.csv" -CurrentCsvPath "$fx\sparse\curr.csv" -AnchorColumn 'ID' -IncludeSummary
+$expected15 = "rows=$($sparseLive15.Changes.Count) total=$($sparseLive15.Summary.Total) adds=$($sparseLive15.Summary.Adds) updates=$($sparseLive15.Summary.Updates) deletes=$($sparseLive15.Summary.Deletes) unchanged=$($sparseLive15.Summary.Unchanged)"
 $hostProbe = @"
 Set-StrictMode -Version 2.0
 `$ErrorActionPreference = 'Stop'
@@ -631,11 +645,11 @@ Set-StrictMode -Version 2.0
 `$PSDefaultParameterValues['Compare-CsvData:DelimiterName'] = 'comma'
 . '$PSScriptRoot\Compare-CsvData.ps1'
 `$r = Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -IncludeSummary
-'rows=' + `$r.Changes.Count + ' total=' + `$r.Summary.Total
+'rows=' + `$r.Changes.Count + ' total=' + `$r.Summary.Total + ' adds=' + `$r.Summary.Adds + ' updates=' + `$r.Summary.Updates + ' deletes=' + `$r.Summary.Deletes + ' unchanged=' + `$r.Summary.Unchanged
 "@
 foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
     $res = & $hostExe[1] -NoProfile -NonInteractive -Command $hostProbe 2>&1
-    Ok "host preferences honoured on PS$($hostExe[0])" ("$res" -match 'rows=\d+ total=\d+') "$res"
+    Ok "host preferences honoured on PS$($hostExe[0]) - actual row/summary counts match" ("$res" -ceq $expected15) "got=[$res] expected=[$expected15]"
 }
 
 ""
@@ -649,6 +663,19 @@ Ok 'CRLF and LF summaries agree' ($crlfR.Summary.Adds -eq $lfR.Summary.Adds -and
 $crlfSorted = ($crlfR.Changes | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
 $lfSorted   = ($lfR.Changes   | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
 Ok 'CRLF and LF rows are content-identical (order-insensitive)' ($crlfSorted -ceq $lfSorted) "crlf=[$crlfSorted] lf=[$lfSorted]"
+
+"    PS5.1 twin"
+$ps51_16 = Invoke-OnPS51 @{
+    crlf = "Compare-CsvData -PreviousCsvPath '$fx\terminators\crlf_prev.csv' -CurrentCsvPath '$fx\terminators\crlf_curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+    lf   = "Compare-CsvData -PreviousCsvPath '$fx\terminators\lf_prev.csv' -CurrentCsvPath '$fx\terminators\lf_curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+}
+$crlfR51 = $ps51_16.crlf
+$lfR51   = $ps51_16.lf
+Ok 'CRLF and LF summaries agree -- PS5.1' ($crlfR51.Summary.Adds -eq $lfR51.Summary.Adds -and $crlfR51.Summary.Updates -eq $lfR51.Summary.Updates -and $crlfR51.Summary.Deletes -eq $lfR51.Summary.Deletes -and $crlfR51.Summary.Unchanged -eq $lfR51.Summary.Unchanged) `
+   "crlf: A=$($crlfR51.Summary.Adds) U=$($crlfR51.Summary.Updates) D=$($crlfR51.Summary.Deletes) N=$($crlfR51.Summary.Unchanged) -- lf: A=$($lfR51.Summary.Adds) U=$($lfR51.Summary.Updates) D=$($lfR51.Summary.Deletes) N=$($lfR51.Summary.Unchanged)"
+$crlfSorted51 = (@($crlfR51.Changes) | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+$lfSorted51   = (@($lfR51.Changes)   | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+Ok 'CRLF and LF rows are content-identical (order-insensitive) -- PS5.1' ($crlfSorted51 -ceq $lfSorted51) "crlf=[$crlfSorted51] lf=[$lfSorted51]"
 
 ""
 "=== 17. an accented (non-ASCII) value compares correctly (TEST-PLAN-Compare-CsvData.md 2.1) ==="
@@ -664,6 +691,15 @@ Ok 'an accented anchor value matches itself, unchanged' ($accR.Summary.Unchanged
 $accUpd = $accR.Changes | Where-Object ID -eq 'E2'
 Ok 'a value changing between two accented values registers as Update, byte-exact' ($accUpd.ChangeType -ceq 'Update' -and $accUpd.Name -ceq $accCreme) "ChangeType=$($accUpd.ChangeType) Name='$($accUpd.Name)'"
 
+"    PS5.1 twin"
+$ps51_17 = Invoke-OnPS51 @{
+    acc = "Compare-CsvData -PreviousCsvPath '$acp' -CurrentCsvPath '$acc' -AnchorColumn 'ID' -IncludeSummary"
+}
+$accR51 = $ps51_17.acc
+Ok 'an accented anchor value matches itself, unchanged -- PS5.1' ($accR51.Summary.Unchanged -eq 1) "N=$($accR51.Summary.Unchanged)"
+$accUpd51 = @($accR51.Changes) | Where-Object ID -eq 'E2'
+Ok 'a value changing between two accented values registers as Update, byte-exact -- PS5.1' ($accUpd51.ChangeType -ceq 'Update' -and $accUpd51.Name -ceq $accCreme) "ChangeType=$($accUpd51.ChangeType) Name='$($accUpd51.Name)'"
+
 ""
 "=== 18. a literal 0-byte file is rejected with a message distinguishable from a header-only"
 "    file's rejection (TEST-PLAN-Compare-CsvData.md 2.2) ==="
@@ -677,6 +713,18 @@ Throws '0-byte Previous: distinct empty-file message' { Compare-CsvData -Previou
 Throws '0-byte Current: distinct empty-file message'  { Compare-CsvData -PreviousCsvPath $goodFile18 -CurrentCsvPath $zeroFile -AnchorColumn 'ID' } 'Current file is empty; no header line found'
 Throws 'header-only Previous: stays the OTHER message' { Compare-CsvData -PreviousCsvPath $headerOnlyFile -CurrentCsvPath $goodFile18 -AnchorColumn 'ID' } 'Previous file yielded no rows'
 Throws 'header-only Current: stays the OTHER message'  { Compare-CsvData -PreviousCsvPath $goodFile18 -CurrentCsvPath $headerOnlyFile -AnchorColumn 'ID' } 'Current file yielded no rows'
+
+"    PS5.1 twin"
+$ps51_18 = Invoke-OnPS51 @{
+    zeroPrev    = "Compare-CsvData -PreviousCsvPath '$zeroFile' -CurrentCsvPath '$goodFile18' -AnchorColumn 'ID'"
+    zeroCurr    = "Compare-CsvData -PreviousCsvPath '$goodFile18' -CurrentCsvPath '$zeroFile' -AnchorColumn 'ID'"
+    hdrOnlyPrev = "Compare-CsvData -PreviousCsvPath '$headerOnlyFile' -CurrentCsvPath '$goodFile18' -AnchorColumn 'ID'"
+    hdrOnlyCurr = "Compare-CsvData -PreviousCsvPath '$goodFile18' -CurrentCsvPath '$headerOnlyFile' -AnchorColumn 'ID'"
+}
+ThrowsPs51 '0-byte Previous: distinct empty-file message -- PS5.1' $ps51_18.zeroPrev 'Previous file is empty; no header line found'
+ThrowsPs51 '0-byte Current: distinct empty-file message -- PS5.1'  $ps51_18.zeroCurr 'Current file is empty; no header line found'
+ThrowsPs51 'header-only Previous: stays the OTHER message -- PS5.1' $ps51_18.hdrOnlyPrev 'Previous file yielded no rows'
+ThrowsPs51 'header-only Current: stays the OTHER message -- PS5.1'  $ps51_18.hdrOnlyCurr 'Current file yielded no rows'
 
 ""
 "=== 19. a decorated path still works, and a missing input file is rejected clearly"
@@ -695,14 +743,29 @@ $ctrlSorted19 = ($ctrl19.Changes | ForEach-Object { ($_.PSObject.Properties.Valu
 $decoSorted19 = ($deco19.Changes | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
 Ok 'a path decorated with [ ], and a non-ASCII character, is content-identical to an undecorated run' `
    ($decoSorted19 -ceq $ctrlSorted19 -and $deco19.Summary.Total -eq $ctrl19.Summary.Total) "decoTotal=$($deco19.Summary.Total) ctrlTotal=$($ctrl19.Summary.Total)"
-Throws 'a missing input file is rejected with a clear, file-naming message' { Compare-CsvData -PreviousCsvPath (Join-Path $w 'e19_missing_input.csv') -CurrentCsvPath $decoCurr -AnchorColumn 'ID' } 'Could not find file'
+$missingInput19 = Join-Path $w 'e19_missing_input.csv'
+Throws 'a missing input file is rejected with a clear, file-naming message' { Compare-CsvData -PreviousCsvPath $missingInput19 -CurrentCsvPath $decoCurr -AnchorColumn 'ID' } 'Could not find file'
+
+"    PS5.1 twin"
+$ps51_19 = Invoke-OnPS51 @{
+    ctrl    = "Compare-CsvData -PreviousCsvPath '$fx\sparse\prev.csv' -CurrentCsvPath '$fx\sparse\curr.csv' -AnchorColumn 'ID' -IncludeSummary"
+    deco    = "Compare-CsvData -PreviousCsvPath '$decoPrev' -CurrentCsvPath '$decoCurr' -AnchorColumn 'ID' -IncludeSummary"
+    missing = "Compare-CsvData -PreviousCsvPath '$missingInput19' -CurrentCsvPath '$decoCurr' -AnchorColumn 'ID'"
+}
+$ctrl19_51 = $ps51_19.ctrl
+$deco19_51 = $ps51_19.deco
+$ctrlSorted19_51 = (@($ctrl19_51.Changes) | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+$decoSorted19_51 = (@($deco19_51.Changes) | ForEach-Object { ($_.PSObject.Properties.Value -join '|') } | Sort-Object) -join "`n"
+Ok 'a path decorated with [ ], and a non-ASCII character, is content-identical to an undecorated run -- PS5.1' `
+   ($decoSorted19_51 -ceq $ctrlSorted19_51 -and $deco19_51.Summary.Total -eq $ctrl19_51.Summary.Total) "decoTotal=$($deco19_51.Summary.Total) ctrlTotal=$($ctrl19_51.Summary.Total)"
+ThrowsPs51 'a missing input file is rejected with a clear, file-naming message -- PS5.1' $ps51_19.missing 'Could not find file'
 
 ""
 # A check that silently stops running is worse than one that fails - assert the denominator, the
 # same discipline the repo's own verification harnesses hold themselves to.
 # Counted BEFORE this assertion runs, so the total printed below is this number plus one.
 # Update it deliberately when adding a check - that is the point.
-$expected = 168
+$expected = 182
 Ok "all $expected preceding checks ran (guards against a check vanishing)" (($pass + $fail) -eq $expected) "ran $($pass + $fail)"
 
 ""
