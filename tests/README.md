@@ -127,10 +127,13 @@ signal about the change, not a performance curiosity.
   every fixture) covers `-IgnoreColumns`
 - a path decorated with wildcard metacharacters or non-ASCII characters, accepted and
   byte-identical to an undecorated run (2026-08-20)
-- `-CaseSensitive` changing anchor identity and value comparison, against the `casing/` fixture
-  (2026-08-20)
+- `-CaseSensitive` changing anchor identity and value comparison, against the `casing/` fixture — all
+  five scripts, `Delta` via its own assertions since its shape has no old/new pair and never writes an
+  unchanged row (2026-08-20; `Delta` added 2026-08-22)
 - `-EncodingName ansi` decoding a BOM-less legacy export correctly where the default doesn't, against
-  the `encoding/` fixture (2026-08-20)
+  the `encoding/` fixture — all five scripts, `Delta` via its own assertions since it shows only the
+  current-side value and never writes a correctly-decoded unchanged row (2026-08-20; `Delta` added
+  2026-08-22)
 - `large`'s multi-pass merge, forced by a small `-BatchSize` against the `merge-passes/` fixture (40
   rows at `-BatchSize 1` exceed the internal fan-in of 32), self-consistent across batch sizes and
   content-equal to `small`'s output (2026-08-20)
@@ -169,7 +172,7 @@ about how much was checked:
 | Agreement | 84 | 5.1 and 7 | seconds |
 | Malformed | 160 | 5.1 and 7 | seconds |
 | Memory | **1** | 7 only | minutes — 15 runs over a 100K-row fixture |
-| Core | 361 | 5.1 and 7 | seconds |
+| Core | 387 | 5.1 and 7 | seconds |
 
 A green Memory run confirms one inequality. It is not a broad statement about performance.
 

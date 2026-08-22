@@ -35,7 +35,9 @@ Four modes:
                     undecorated run (E1/E2); -CaseSensitive changing anchor identity and value
                     comparison, against the casing\ fixture (A1); a BOM-less legacy export
                     decoding correctly under -EncodingName ansi but not under the default, against the
-                    encoding\ fixture (A2); large's multi-pass merge forced by a small -BatchSize,
+                    encoding\ fixture (A2) - both A1 and A2 include Delta via its own assertions,
+                    since its whole-changed-row shape needs different expected values than the other
+                    four's old/new-pair shape; large's multi-pass merge forced by a small -BatchSize,
                     against the merge-passes\ fixture (A4); -RejectDuplicateAnchors turning a
                     duplicate anchor from a warning into a rejection naming the right side, against the
                     duplicates\ fixture and an ad-hoc Current-only-duplicate variant (A5); CRLF and
@@ -798,8 +800,10 @@ elseif ($Mode -eq 'Core') {
     # are what is asserted below - by anchor lookup via Import-Csv, not line position, so a
     # legitimate reorder can never be mistaken for a regression.
     "=== A1: -CaseSensitive ==="
-    # Scoped to four scripts, matching how this case was originally specified; whether Delta joins
-    # Group A is a separate decision, not made here.
+    # Scoped to four scripts sharing the old/new-pair standard shape. Delta gets its own block below
+    # rather than joining this loop - it neither emits old/new column pairs nor writes an Unchanged
+    # row at all (G9), so its row counts and per-anchor assertions differ from the other four's.
+    # Resolved G18 Decision 4, 2026-08-22.
     $groupAScripts = @($Scripts | Where-Object { $_ -ne 'Delta' })
     $casingDir = Join-Path $FixtureFolder 'casing'
     $casingPrev = Join-Path $casingDir 'prev.csv'; $casingCurr = Join-Path $casingDir 'curr.csv'
@@ -864,6 +868,52 @@ elseif ($Mode -eq 'Core') {
                         Test-ContentEqual "A1:small == large ($label)" $stdShapeOut["small$label"] $stdShapeOut["large$label"] 1
                     }
                 }
+            }
+        }
+
+        # Delta's own block, resolving G18 Decision 4: -CaseSensitive is measured to
+        # reach Delta's comparer identically to the other four (same $anchorComparer selection,
+        # CompareCSVs_Delta.ps1:194/:628), but its output shape means the assertions above can't just
+        # run against it - no old/new column pair (whole current-side row only) and no row at all for
+        # ChangeType=None (G9), so row counts and per-anchor checks differ from the standard shape's.
+        # No cross-script Test-ContentEqual here for the same reason A7 excludes Delta from its own:
+        # a different shape isn't a sibling-agreement failure.
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            foreach ($cs in @($false, $true)) {
+                $label = if ($cs) { 'cs' } else { 'default' }
+                $out = Join-Path $work ("a1_Delta_{0}_{1}" -f $label,$v[0])
+                Clear-Dir $out
+                $scriptArgs = @('-PreviousCSVFile',$casingPrev,'-CurrentCSVFile',$casingCurr,'-AnchorColumn','ID','-OutputFolder',$out)
+                if ($cs) { $scriptArgs += '-CaseSensitive' }
+                $r = & $v[1] -NoProfile -File (Join-Path $ScriptFolder 'CompareCSVs_Delta.ps1') @scriptArgs *>&1
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A1:Delta $label PS$($v[0]) report written" $false; continue }
+
+                $joined = (($r -join ' ') -replace '\s+', ' ').Trim()
+                $warnPrev = ([regex]::Matches($joined, "Duplicate anchor 'ABC' in Previous file")).Count
+                $warnCurr = ([regex]::Matches($joined, "Duplicate anchor 'ABC' in Current file")).Count
+                $expectWarn = if ($cs) { 0 } else { 1 }
+                Assert-Check "A1:Delta $label PS$($v[0]) warnings (Previous/Current)" ($warnPrev -eq $expectWarn -and $warnCurr -eq $expectWarn) "Previous=$warnPrev Current=$warnCurr"
+
+                $rows = @(Import-Csv -LiteralPath $f.FullName)
+                $expectRows = if ($cs) { 2 } else { 1 }
+                Assert-Check "A1:Delta $label PS$($v[0]) row count" ($rows.Count -eq $expectRows) "expected $expectRows found $($rows.Count) - if this does not change between default/cs, -CaseSensitive is not reaching the comparer"
+
+                if ($cs) {
+                    $abc = @($rows | Where-Object { $_.ID -ceq 'abc' })
+                    Assert-Check "A1:Delta cs PS$($v[0]) abc Update (ACTIVE)" `
+                        ($abc.Count -eq 1 -and $abc[0].ChangeType -eq 'Update' -and $abc[0].Status -ceq 'ACTIVE') `
+                        "ChangeType=$($abc[0].ChangeType) Status=$($abc[0].Status)"
+                    $ABCrow = @($rows | Where-Object { $_.ID -ceq 'ABC' })
+                    Assert-Check "A1:Delta cs PS$($v[0]) ABC absent (unchanged rows are never written)" ($ABCrow.Count -eq 0) "found $($ABCrow.Count) row(s)"
+                } else {
+                    $abcAny = @($rows | Where-Object { $_.ID -in @('abc','ABC') })
+                    Assert-Check "A1:Delta default PS$($v[0]) abc/ABC absent (merged, unchanged)" ($abcAny.Count -eq 0) "found $($abcAny.Count) row(s)"
+                }
+                $xyz = @($rows | Where-Object { $_.ID -ceq 'xyz' })
+                Assert-Check "A1:Delta $label PS$($v[0]) xyz Update (CHANGED)" `
+                    ($xyz.Count -eq 1 -and $xyz[0].ChangeType -eq 'Update' -and $xyz[0].Status -ceq 'CHANGED') `
+                    "ChangeType=$($xyz[0].ChangeType) Status=$($xyz[0].Status)"
             }
         }
     }
@@ -946,6 +996,39 @@ elseif ($Mode -eq 'Core') {
                         Test-ContentEqual "A2:small == large ($label)" $stdShapeOut["small$label"] $stdShapeOut["large$label"] 1
                     }
                 }
+            }
+        }
+
+        # Delta's own block, resolving G18 Decision 4: -EncodingName reaches Delta's
+        # decoding identically to the other four (identical 8-value -EncodingName ValidateSet,
+        # CompareCSVs_Delta.ps1:168), but its shape means the assertions above can't run against it as-
+        # is - it shows only the current-side value, and a correctly-decoded ID=1 (ChangeType=None) is
+        # never written at all (G9), unlike the standard shape's row-with-None.
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            foreach ($ansi in @($false, $true)) {
+                $label = if ($ansi) { 'ansi' } else { 'default' }
+                $out = Join-Path $work ("a2_Delta_{0}_{1}" -f $label,$v[0])
+                Clear-Dir $out
+                $scriptArgs = @('-PreviousCSVFile',$encPrev,'-CurrentCSVFile',$encCurr,'-AnchorColumn','ID','-OutputFolder',$out)
+                if ($ansi) { $scriptArgs += @('-EncodingName','ansi') }
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder 'CompareCSVs_Delta.ps1') @scriptArgs *>&1 | Out-Null
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A2:Delta $label PS$($v[0]) report written" $false; continue }
+
+                $importArgs = @{ LiteralPath = $f.FullName }
+                if ($ansi) { $importArgs['Encoding'] = $ansiCodePage }
+                $rows = @(Import-Csv @importArgs)
+                $row1 = @($rows | Where-Object { $_.ID -eq '1' })
+                $row2 = @($rows | Where-Object { $_.ID -eq '2' })
+
+                if ($ansi) {
+                    Assert-Check "A2:Delta ansi PS$($v[0]) ID=1 absent (correctly unchanged)" ($row1.Count -eq 0) "found $($row1.Count) row(s)"
+                } else {
+                    Assert-Check "A2:Delta default PS$($v[0]) ID=1 Update (spurious), name decodes correctly" `
+                        ($row1.Count -eq 1 -and $row1[0].ChangeType -eq 'Update' -and $row1[0].Name -ceq $cafeUtf8) `
+                        "ChangeType=$($row1[0].ChangeType) Name=$($row1[0].Name)"
+                }
+                Assert-Check "A2:Delta $label PS$($v[0]) ID=2 Update (ASCII-only control)" ($row2.Count -eq 1 -and $row2[0].ChangeType -eq 'Update') "found $($row2.Count) row(s)"
             }
         }
     }
