@@ -151,6 +151,10 @@ signal about the change, not a performance curiosity.
 - empty and whitespace-only values in the core comparison and in each shape's own output — a cleared
   value, an added value, a both-sides-empty column and a whitespace-vs-empty column, against the
   `empty-values/` fixture — all five scripts, including `Delta` (2026-08-20)
+- `-TreatWhitespaceAsEmpty` collapsing a whitespace-only value to equal an empty one, against the same
+  `empty-values/` fixture's ID=5 (added 2026-08-23), the one record whose only difference is exactly
+  that — proving the switch can turn a whole record from changed to unchanged, and that `Delta` omits
+  it the same as any other unchanged record — all five scripts (2026-08-23)
 
 All 8 of the silent-wrongness group's cases are now covered.
 
@@ -172,7 +176,7 @@ about how much was checked:
 | Agreement | 84 | 5.1 and 7 | seconds |
 | Malformed | 160 | 5.1 and 7 | seconds |
 | Memory | **1** | 7 only | minutes — 15 runs over a 100K-row fixture |
-| Core | 387 | 5.1 and 7 | seconds |
+| Core | 417 | 5.1 and 7 | seconds |
 
 A green Memory run confirms one inequality. It is not a broad statement about performance.
 
@@ -205,7 +209,7 @@ Two deliberate exceptions, both providing coverage nothing else does — **do no
 | `terminators/` | `sparse/`'s content (all four change types, three columns), in two byte-variants: `crlf_*.csv` and `lf_*.csv`, otherwise identical. No embedded newline in any value - the terminator is the only thing under test. Used by `-Mode Core`'s A7, which asserts each script's own CRLF-input output is byte-identical to its LF-input output. |
 | `newline-diff/` | Three rows: one whose only change is inside a multi-line quoted value, one whose multi-line value is unchanged but another column changed (control against false-positive "any multi-line field" flagging), and one fully unchanged plain-value row (control). CRLF row terminators, but the embedded newline inside the quoted values is bare LF - deliberately mismatched from the file's own convention, so quote-tracking is proven independent of it without a separate fixture. Used by `-Mode Core`'s A8. |
 | `delimiters/` | `sparse/`'s content (all four change types), in two delimiter variants: `prev.csv`/`curr.csv` (tab-delimited) and `prev_comma.csv`/`curr_comma.csv` (comma-delimited), otherwise identical. No value contains a comma or a tab, so a literal tab-to-comma substitution on the tab-delimited report is an exact comparison against the comma-delimited report. Used by `-Mode Core`'s A3. |
-| `empty-values/` | Four rows, five columns: a cleared value (populated in Previous, empty in Current), an added value (the reverse), a column empty on both sides, and a whitespace-only value against an empty one, all on one record; a fully-unchanged record with three empty columns (proves empty-vs-empty manufactures no difference); a Delete and an Add record, each carrying empty cells. Used by `-Mode Core`'s A6. |
+| `empty-values/` | Five rows, five columns: a cleared value (populated in Previous, empty in Current), an added value (the reverse), a column empty on both sides, and a whitespace-only value against an empty one, all on one record; a fully-unchanged record with three empty columns (proves empty-vs-empty manufactures no difference); a Delete and an Add record, each carrying empty cells; a record identical except for a whitespace-only-vs-empty column (added 2026-08-23), isolating that one difference from the others for `-TreatWhitespaceAsEmpty`. Used by `-Mode Core`'s A6. |
 
 Fixtures are committed rather than generated so they stop being re-derived, and because several
 encode findings that were not obvious. Add to them rather than replacing them.

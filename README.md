@@ -151,6 +151,7 @@ All five scripts accept these.
 | `-DelimiterName` | `comma` (default), `tab`, `semicolon`, `pipe` |
 | `-EncodingName` | see below (default `utf8BOM`) |
 | `-CaseSensitive` | compare keys and values case-sensitively |
+| `-TreatWhitespaceAsEmpty` | compare a whitespace-only value as equal to an empty one |
 | `-RejectDuplicateAnchors` | fail the run instead of warning on a duplicate anchor value |
 
 ### -EncodingName
@@ -257,6 +258,13 @@ In the raw file the two kinds of blank differ: `,,` is an unchanged column, `,""
 empty value. **Excel shows both as an empty cell**, so read the pair rather than the single cell. The
 distinction is there for anything consuming the CSV programmatically.
 
+**`-TreatWhitespaceAsEmpty` changes what counts as blank in this table.** By default a whitespace-only
+value is a value like any other, so `"   "` against `""` reads as **cleared**. With the switch on, a
+whitespace-only value compares equal to an empty one, so that pair no longer counts as a change at
+all — the column is left blank like any other unchanged one. The switch affects only which pairs
+count as a change; when a column *does* change, the report always shows the file's own raw value,
+never a normalized one.
+
 ### Detailed report — `Detailed`
 
 Columns are the anchor, `ChangeType`, then `old <column>`, `new <column>` and `match <column>` for
@@ -264,7 +272,9 @@ every other column. The anchor itself gets no `old`/`new`/`match` set — see "C
 above for why. Every other column is populated on every row.
 
 - `match` is `True` or `False` on Update and None rows, and empty on Add and Delete rows, which have
-  nothing to compare against.
+  nothing to compare against. `-TreatWhitespaceAsEmpty` can turn a `False` into a `True` for a
+  whitespace-only value against an empty one; `old`/`new` still show the file's own raw value either
+  way — every column is always populated here, so there is no blank-cell distinction to change.
 - A `SUMMARY` row is inserted as the first record, giving per-column mismatch counts as
   `X of Y FALSE`. Its `ChangeType` cell reads `---`, so it is easy to filter out.
 - When `-ValueTransforms` is used, the SUMMARY row's `old` cell lists **every configured transform
@@ -388,7 +398,9 @@ turn an empty cell into something the equally empty Current cell no longer match
 difference on every blank rather than reconciling one.
 
 **Whitespace is not empty.** `'   '` is an ordinary value — it can be targeted explicitly
-(`'   ' = 'X'`), and `'*'` does reach it.
+(`'   ' = 'X'`), and `'*'` does reach it. This is about which transform rule a value matches, a step
+that runs before the final comparison — separate from `-TreatWhitespaceAsEmpty`, which affects only
+that final comparison, after any transform has already applied.
 
 If a column has a `'*'` rule, contains empty values, and has no `''` rule, the run says so:
 
@@ -476,6 +488,11 @@ it.
 cannot be blank, and the run throws — naming the offending column and the fix — if it collides with a
 column already in Current. It is meaningless with `-SeparateDeleteFile`, which writes no such column,
 and PowerShell rejects that combination at bind time.
+
+**`-TreatWhitespaceAsEmpty`** treats a whitespace-only value as equal to an empty one when deciding
+whether a record changed. This script has no per-column view, so a record whose only difference is
+exactly that — `"   "` against `""` — is not written at all when the switch is on: it counts as
+unchanged, the same as a record with no differences.
 
 **`-NormalizeHeaderNames`** opts in to the family's trim+lowercase header treatment. Off by default:
 this script's output headers are Current's own names verbatim, and lowercasing them would silently

@@ -11,6 +11,8 @@ Streaming comparison suited for mid/large CSVs, with full field-level match trac
   the comparison runs. Peak memory is therefore well below the in-memory script for the same input.
 - Detects and warns about duplicate anchor values (uses first occurrence only).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
+- Value comparison is exact by default, so a whitespace-only value differs from an empty one;
+  -TreatWhitespaceAsEmpty makes the two compare equal.
 - Outputs a CSV with ChangeType and old/new/match values for all columns.
   - Match column shows True/False for Update/None rows.
   - Match column will be empty for Add/Delete rows (cannot be matched across files).
@@ -62,6 +64,15 @@ switch absent) is to warn and continue, using the first occurrence and ignoring 
 switch, the run throws on the first duplicate it finds and writes no report - useful when the anchor
 is meant to be unique, since a duplicate is then a data-quality problem (often a wrong
 -AnchorColumn) rather than something to quietly work around.
+
+.PARAMETER TreatWhitespaceAsEmpty
+Compare a whitespace-only value as equal to an empty one. Off by default, so "   " against "" is a
+difference like any other value change. With this switch, both sides normalize to empty before the
+final comparison - after -DateFormats and -ValueTransforms have already run, so it does not change
+how those match their own rules (see "Whitespace is not empty" under -ValueTransforms below, which is
+a separate, earlier matching step). The report still shows each file's own value; only the
+comparison and the match column are affected. Does not reach the anchor column, which must already
+be non-blank on both sides regardless of this switch.
 
 .PARAMETER ValueTransforms
 Hashtable of column-specific value transformations. Format:
@@ -167,6 +178,7 @@ Param(
     [string]$EncodingName = 'utf8BOM',
     [switch]$CaseSensitive,
     [switch]$RejectDuplicateAnchors,
+    [switch]$TreatWhitespaceAsEmpty,
     [hashtable]$ValueTransforms = @{},
     [hashtable]$DateFormats = @{},
     [string[]]$IgnoreColumns = @()
@@ -816,6 +828,14 @@ try {
                                     $prevValueForComparison = $transformValue
                                 }
                             }
+                        }
+
+                        # $prevValueForComparison/$currValueForComparison are already comparison-only
+                        # (see date/transform normalization above) - $row still gets $prevValue/$currValue
+                        # untouched, so normalizing these in place does not affect the old/new columns.
+                        if ($TreatWhitespaceAsEmpty) {
+                            if ([string]::IsNullOrWhiteSpace($prevValueForComparison)) { $prevValueForComparison = '' }
+                            if ([string]::IsNullOrWhiteSpace($currValueForComparison)) { $currValueForComparison = '' }
                         }
 
                         $valuesDiffer = if ($CaseSensitive) { $prevValueForComparison -cne $currValueForComparison } else { $prevValueForComparison -ine $currValueForComparison }

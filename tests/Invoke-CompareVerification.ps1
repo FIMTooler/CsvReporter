@@ -1369,6 +1369,12 @@ elseif ($Mode -eq 'Core') {
     # AND Padded together (built exactly to the plan's own fixture spec), so what is actually
     # checked below is that Delta's Update row emits Current's own value for the cleared field
     # verbatim (an empty cell), not a claim about an isolated single-column change.
+    # ID=5, added 2026-08-23 for -TreatWhitespaceAsEmpty, is present on both
+    # sides and identical except for Padded - the isolated case ID=1 cannot provide, since ID=1's
+    # Padded change never travels alone. A second full pass below reruns every script with the
+    # switch: ID=1 proves a changed column can render bare without affecting an Update the other
+    # columns still cause; ID=5 proves the switch can turn a whole record from changed to
+    # unchanged, and that Delta omits it the same as any other unchanged record.
     "=== A6: empty and whitespace-only values ==="
     $evDir = Join-Path $FixtureFolder 'empty-values'
     $evPrev = Join-Path $evDir 'prev.csv'; $evCurr = Join-Path $evDir 'curr.csv'
@@ -1401,6 +1407,9 @@ elseif ($Mode -eq 'Core') {
                         ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'Delete' -and $r3[0].Cleared -ceq 'Legal' -and $r3[0].Added -ceq 'g') "ChangeType=$($r3[0].ChangeType) Cleared='$($r3[0].Cleared)' Added='$($r3[0].Added)'"
                     Assert-Check "A6:$s PS$($v[0]) ID=4 Add, Current's values verbatim" `
                         ($r4.Count -eq 1 -and $r4[0].ChangeType -eq 'Add' -and $r4[0].Cleared -ceq 'New' -and $r4[0].Added -ceq 'n') "ChangeType=$($r4[0].ChangeType) Cleared='$($r4[0].Cleared)' Added='$($r4[0].Added)'"
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=5 Update (padded whitespace vs empty, no other column differs)" `
+                        ($r5.Count -eq 1 -and $r5[0].ChangeType -eq 'Update' -and $r5[0].Padded -ceq '') "ChangeType=$($r5[0].ChangeType) Padded='$($r5[0].Padded)'"
                 }
                 elseif ($s -eq 'Detailed') {
                     # Detailed always populates old/new regardless of match (A2 already established
@@ -1419,6 +1428,10 @@ elseif ($Mode -eq 'Core') {
                     Assert-Check "A6:$s PS$($v[0]) ID=2 None, match all True (empty-vs-empty manufactures no difference)" `
                         ($r2.Count -eq 1 -and $r2[0].ChangeType -eq 'None' -and $r2[0].'match cleared' -eq 'True' -and $r2[0].'match added' -eq 'True' -and $r2[0].'match bothempty' -eq 'True' -and $r2[0].'match padded' -eq 'True') `
                         "ChangeType=$($r2[0].ChangeType) match cleared=$($r2[0].'match cleared') added=$($r2[0].'match added') bothempty=$($r2[0].'match bothempty') padded=$($r2[0].'match padded')"
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=5 Update, match padded False, old padded/new padded whitespace vs empty" `
+                        ($r5.Count -eq 1 -and $r5[0].ChangeType -eq 'Update' -and $r5[0].'match padded' -eq 'False' -and $r5[0].'old padded' -ceq '   ' -and $r5[0].'new padded' -ceq '') `
+                        "ChangeType=$($r5[0].ChangeType) match padded=$($r5[0].'match padded') old='$($r5[0].'old padded')' new='$($r5[0].'new padded')'"
                 }
                 else {
                     # Standard shape (small/medium/large): a bare cell means unchanged, populated
@@ -1440,12 +1453,58 @@ elseif ($Mode -eq 'Core') {
                         ($r3.Count -eq 1 -and $r3[0].ChangeType -eq 'Delete' -and $r3[0].'old cleared' -ceq 'Legal' -and $r3[0].'old added' -ceq 'g') "ChangeType=$($r3[0].ChangeType) old cleared='$($r3[0].'old cleared')' old added='$($r3[0].'old added')'"
                     Assert-Check "A6:$s PS$($v[0]) ID=4 Add, new cleared/new added carry Current's values" `
                         ($r4.Count -eq 1 -and $r4[0].ChangeType -eq 'Add' -and $r4[0].'new cleared' -ceq 'New' -and $r4[0].'new added' -ceq 'n') "ChangeType=$($r4[0].ChangeType) new cleared='$($r4[0].'new cleared')' new added='$($r4[0].'new added')'"
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6:$s PS$($v[0]) ID=5 Update, old padded/new padded whitespace vs empty (isolated case)" `
+                        ($r5.Count -eq 1 -and $r5[0].ChangeType -eq 'Update' -and $r5[0].'old padded' -ceq '   ' -and $r5[0].'new padded' -ceq '') "ChangeType=$($r5[0].ChangeType) old='$($r5[0].'old padded')' new='$($r5[0].'new padded')'"
                 }
             }
             # Order-insensitive on purpose, matching A1/A3/A4: large still sorts, small/medium don't.
             if ($v[0] -eq '7') {
                 Test-ContentEqual "A6:small == medium" $stdShapeOut['small'] $stdShapeOut['medium'] 1
                 Test-ContentEqual "A6:small == large" $stdShapeOut['small'] $stdShapeOut['large'] 1
+            }
+        }
+
+        # -TreatWhitespaceAsEmpty: same fixture, same five scripts, switch added. ID=1 stays Update
+        # regardless (Cleared/Added differ on their own); ID=5's only difference is Padded, so it is
+        # the case that isolates the switch's effect on classification - ID=1 alone cannot show this,
+        # since Delta has no per-column channel to tell which of ID=1's three changes drove its Update.
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            foreach ($s in $Scripts) {
+                $out = Join-Path $work ("a6tw_{0}_{1}" -f $s,$v[0])
+                Clear-Dir $out
+                & $v[1] -NoProfile -File (Join-Path $ScriptFolder "CompareCSVs_$s.ps1") `
+                    -PreviousCSVFile $evPrev -CurrentCSVFile $evCurr -AnchorColumn ID -OutputFolder $out -TreatWhitespaceAsEmpty *>&1 | Out-Null
+                $f = Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $f) { Assert-Check "A6tw:$s PS$($v[0]) report written" $false; continue }
+                $rows = Import-Csv -LiteralPath $f.FullName
+
+                if ($s -eq 'Delta') {
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=1 still Update (Cleared/Added differ regardless of the switch)" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update') "ChangeType=$($r1[0].ChangeType)"
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=5 omitted (only difference was whitespace vs empty)" ($r5.Count -eq 0) "found $($r5.Count) row(s)"
+                }
+                elseif ($s -eq 'Detailed') {
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=1 Update, match padded now True, old/new padded still raw" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and $r1[0].'match padded' -eq 'True' -and $r1[0].'old padded' -ceq '   ' -and $r1[0].'new padded' -ceq '') `
+                        "ChangeType=$($r1[0].ChangeType) match padded=$($r1[0].'match padded') old='$($r1[0].'old padded')' new='$($r1[0].'new padded')'"
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=5 reclassifies Update to None, match padded True, old/new padded still raw" `
+                        ($r5.Count -eq 1 -and $r5[0].ChangeType -eq 'None' -and $r5[0].'match padded' -eq 'True' -and $r5[0].'old padded' -ceq '   ' -and $r5[0].'new padded' -ceq '') `
+                        "ChangeType=$($r5[0].ChangeType) match padded=$($r5[0].'match padded') old='$($r5[0].'old padded')' new='$($r5[0].'new padded')'"
+                }
+                else {
+                    $r1 = @($rows | Where-Object { $_.ID -eq '1' })
+                    $r5 = @($rows | Where-Object { $_.ID -eq '5' })
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=1 Update, old padded/new padded now bare (Cleared/Added still real changes)" `
+                        ($r1.Count -eq 1 -and $r1[0].ChangeType -eq 'Update' -and [string]::IsNullOrEmpty($r1[0].'old padded') -and [string]::IsNullOrEmpty($r1[0].'new padded')) `
+                        "ChangeType=$($r1[0].ChangeType) old='$($r1[0].'old padded')' new='$($r1[0].'new padded')'"
+                    Assert-Check "A6tw:$s PS$($v[0]) ID=5 reclassifies Update to None (only difference collapses)" `
+                        ($r5.Count -eq 1 -and $r5[0].ChangeType -eq 'None') "ChangeType=$($r5[0].ChangeType)"
+                }
             }
         }
     }

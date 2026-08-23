@@ -11,6 +11,8 @@ Streaming comparison suited for mid/large CSVs:
   the comparison runs. Peak memory is therefore well below the in-memory script for the same input.
 - Detects and warns about duplicate anchor values (uses first occurrence only).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
+- Value comparison is exact by default, so a whitespace-only value differs from an empty one;
+  -TreatWhitespaceAsEmpty makes the two compare equal.
 - Outputs a CSV with ChangeType and old/new values for changed columns.
   - On Update rows only the columns that actually changed are populated. Unchanged columns are
     left as empty unquoted fields, which keeps a mostly-unchanged report small and makes the
@@ -63,6 +65,13 @@ switch, the run throws on the first duplicate it finds and writes no report - us
 is meant to be unique, since a duplicate is then a data-quality problem (often a wrong
 -AnchorColumn) rather than something to quietly work around.
 
+.PARAMETER TreatWhitespaceAsEmpty
+Compare a whitespace-only value as equal to an empty one. Off by default, so "   " against "" is a
+difference like any other value change. With this switch, both sides normalize to empty before the
+comparison runs - the report still shows each file's own value; only the comparison is affected.
+Does not reach the anchor column, which must already be non-blank on both sides regardless of this
+switch.
+
 .INPUTS
 None. You cannot pipe objects to this script.
 
@@ -98,7 +107,8 @@ Param(
     [ValidateSet('auto','ascii','ansi','default','oem','unicode','utf8BOM','utf8NoBOM')]
     [string]$EncodingName = 'utf8BOM',
     [switch]$CaseSensitive,
-    [switch]$RejectDuplicateAnchors
+    [switch]$RejectDuplicateAnchors,
+    [switch]$TreatWhitespaceAsEmpty
 )
 try {
     $scriptStartTime = Get-Date
@@ -470,7 +480,11 @@ try {
                         $prevValue = $prevRow[$prevIdx]
                         $currValue = $currRow[$currIdx]
 
-                        $valuesDiffer = if ($CaseSensitive) { $prevValue -cne $currValue } else { $prevValue -ine $currValue }
+                        # Comparison-only copies: $prevValue/$currValue keep the file's own text for
+                        # the old/new columns below even when this normalizes them for the diff check.
+                        $prevValueCmp = if ($TreatWhitespaceAsEmpty -and [string]::IsNullOrWhiteSpace($prevValue)) { '' } else { $prevValue }
+                        $currValueCmp = if ($TreatWhitespaceAsEmpty -and [string]::IsNullOrWhiteSpace($currValue)) { '' } else { $currValue }
+                        $valuesDiffer = if ($CaseSensitive) { $prevValueCmp -cne $currValueCmp } else { $prevValueCmp -ine $currValueCmp }
 
                         if ($valuesDiffer)
                         {

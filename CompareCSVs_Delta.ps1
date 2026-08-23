@@ -16,6 +16,9 @@ value, not by their formatted text, so a difference only in quoting style never 
   the comparison runs.
 - Detects and warns about duplicate anchor values (uses first occurrence only).
 - Case-sensitive or insensitive comparisons per -CaseSensitive.
+- Value comparison is exact by default, so a whitespace-only value differs from an empty one;
+  -TreatWhitespaceAsEmpty makes the two compare equal. This script has no per-column view, so a
+  record whose only difference is exactly that is not written at all when the switch is on.
 - Output columns are every column of Current, in Current's physical order. The anchor is an
   ordinary column in its natural position - not hoisted to the front and not duplicated. A
   ChangeType column, naming Add/Update/Delete, is prepended unless -SeparateDeleteFile is used.
@@ -83,6 +86,14 @@ switch absent) is to warn and continue, using the first occurrence and ignoring 
 switch, the run throws on the first duplicate it finds and writes no report - useful when the anchor
 is meant to be unique, since a duplicate is then a data-quality problem (often a wrong
 -AnchorColumn) rather than something to quietly work around.
+
+.PARAMETER TreatWhitespaceAsEmpty
+Compare a whitespace-only value as equal to an empty one. Off by default, so "   " against "" is a
+difference like any other value change. With this switch, both sides normalize to empty before the
+comparison runs. This script emits the whole record rather than per-column detail, so a record whose
+only difference is exactly this is counted as unchanged and never written - the same as any other
+record with no differences. Does not reach the anchor column, which must already be non-blank on
+both sides regardless of this switch.
 
 .PARAMETER NormalizeHeaderNames
 Opt in to trimmed, lowercased output header names, matching the trim+lowercase treatment the rest of
@@ -169,6 +180,7 @@ Param(
     [string]$EncodingName = 'utf8BOM',
     [switch]$CaseSensitive,
     [switch]$RejectDuplicateAnchors,
+    [switch]$TreatWhitespaceAsEmpty,
     [switch]$NormalizeHeaderNames,
     [switch]$AnchorOnlyDeletes,
     [switch]$Force,
@@ -625,7 +637,9 @@ try {
                     {
                         $prevValue = $prevRow[$prevHeaderIdx[$n]]
                         $currValue = $currRow[$currHeaderIdx[$n]]
-                        $valuesDiffer = if ($CaseSensitive) { $prevValue -cne $currValue } else { $prevValue -ine $currValue }
+                        $prevValueCmp = if ($TreatWhitespaceAsEmpty -and [string]::IsNullOrWhiteSpace($prevValue)) { '' } else { $prevValue }
+                        $currValueCmp = if ($TreatWhitespaceAsEmpty -and [string]::IsNullOrWhiteSpace($currValue)) { '' } else { $currValue }
+                        $valuesDiffer = if ($CaseSensitive) { $prevValueCmp -cne $currValueCmp } else { $prevValueCmp -ine $currValueCmp }
                         if ($valuesDiffer) { $isUpdate = $true; break }   # whole-row output needs no further column, only the verdict
                     }
                     # Matched: drop it from the lookup so what remains is the delete set, and so the
