@@ -569,10 +569,11 @@ parameter or passing `-BatchSize 0`. A wrapper does not need to tell the two apa
 
 ## Related tools
 
-`Compare-CsvData` solves the same problem in a different shape: instead of writing a report file, it
-hands the changed rows straight back to your own script, ready to pipe into whatever comes next. It's
-a function you dot-source and call, not a script you run on its own. See
-[Compare-CsvData/README.md](Compare-CsvData/README.md).
+Two functions in `functions/` solve the same problem in a different shape: instead of writing
+a report file, they hand the changed rows straight back to your own script, ready to pipe into
+whatever comes next. Both are dot-sourced and called, not run on their own — `Compare-CsvData` takes
+two file paths, `Compare-ImportedCsv` takes two collections of rows already in memory and does no
+file I/O at all. See [functions/README.md](functions/README.md) for both.
 
 ## License
 

@@ -1,9 +1,15 @@
-# Compare-CsvData
+# Compare-CsvData and Compare-ImportedCsv
 
-An embeddable PowerShell function, not a standalone script. Dot-source it into your own automation
-and call `Compare-CsvData` directly — there is nothing to run on its own.
+Two embeddable PowerShell functions, not standalone scripts. Dot-source the one you need into your
+own automation and call it directly — there is nothing to run on its own. Same comparison, same
+verdicts; pick by where your data is:
 
-It compares two CSV exports on an anchor column and hands back only the rows that changed, each one
+- **`Compare-CsvData`** takes two file paths and owns reading the files — for the daily two-files
+  loop.
+- **`Compare-ImportedCsv`** takes two collections of rows you've already imported and does no file
+  I/O at all — for datasets already in memory. You own `Import-Csv` and `Export-Csv`.
+
+Both compare two CSV exports on an anchor column and hand back only the rows that changed, each one
 the whole row, with a `ChangeType` of `Add`, `Update` or `Delete`. Rows that did not change are
 counted but never returned.
 
@@ -12,6 +18,8 @@ current version of that row. One return value therefore holds two points in time
 row as current state.
 
 ## Quick start
+
+With file paths — `Compare-CsvData`:
 
 ```powershell
 . .\Compare-CsvData.ps1
@@ -22,9 +30,25 @@ $changes = Compare-CsvData -PreviousCsvPath .\yesterday.csv -CurrentCsvPath .\to
 $changes | Export-Csv -LiteralPath .\delta.csv -NoTypeInformation -Encoding UTF8
 ```
 
-The rows come back ready to export — no reshaping needed. Add `-IncludeSummary` if you also want the
-summary: how many Adds, Updates and Deletes, how many rows were unchanged, and how many rows were in
-each file. See [Output](#output) below for both shapes.
+With rows already in memory — `Compare-ImportedCsv`:
+
+```powershell
+. .\Compare-ImportedCsv.ps1
+
+$previous = Import-Csv -LiteralPath .\yesterday.csv -Encoding UTF8
+$current  = Import-Csv -LiteralPath .\today.csv -Encoding UTF8
+
+$changes = Compare-ImportedCsv -PreviousRows $previous -CurrentRows $current -AnchorColumn EmployeeID
+$changes | Export-Csv -LiteralPath .\delta.csv -NoTypeInformation -Encoding UTF8
+```
+
+Either way the rows come back ready to export — no reshaping needed. Add `-IncludeSummary` if you
+also want the summary: how many Adds, Updates and Deletes, how many rows were unchanged, and how many
+rows were on each side. See [Output](#output) below for both shapes.
+
+The sections below are written with `Compare-CsvData`'s parameters and apply to both functions;
+[Compare-ImportedCsv: what changes](#compare-importedcsv-what-changes) at the end gathers every
+difference in one place.
 
 ## Parameters
 
@@ -145,3 +169,35 @@ if ($changes.Count -gt 0) {
 One thing to avoid: `Export-Csv -InputObject $changes`. It looks equivalent to piping and is much
 faster, because it writes the array as a single object instead of one line per row — two lines
 written instead of the thousands you meant to write. Always pipe the rows through.
+
+## Compare-ImportedCsv: what changes
+
+The verdicts are identical, deliberately: the two functions share every line of comparison logic, so
+they can never disagree on the same data. Everything above about the anchor, `-ExpectedColumns`,
+`-ChangeTypeColumnName`, `-CaseSensitive`, `-IncludeSummary` and the two return shapes applies
+unchanged. What changes:
+
+- **`-PreviousRows` and `-CurrentRows` replace the two path parameters.** Named parameters only, no
+  pipeline input — two same-shaped collections down one pipeline would leave which one is Previous
+  and which is Current ambiguous.
+- **`-Encoding` and `-DelimiterName` do not exist here.** Your own `Import-Csv` owns both, so points
+  1 and 3 of [What your calling code must do](#what-your-calling-code-must-do) now apply to that
+  call.
+- **Pass rows exactly as `Import-Csv` produces them:** `[pscustomobject]` rows, every cell a string
+  or absent. Anything can be handed to a function, so every row on both sides is checked before the
+  comparison starts — a hashtable row, a typed cell (an `[int]`, a date, an array), or a row whose
+  columns do not match row 1's stops the run naming the side, the row and, for a bad cell, the
+  column. Rows that crossed a remoting or `Import-Clixml` boundary still pass.
+- **Rows holding typed values must be flattened first:**
+
+  ```powershell
+  $rows = $typed | ConvertTo-Csv -NoTypeInformation | ConvertFrom-Csv
+  ```
+
+  This produces all-string rows with exactly the semantics your own `Export-Csv` would have applied
+  on the way to a file.
+- **The file-shaped refusals have no equivalent here.** An empty collection, `$null`, or a collection
+  containing a `$null` element is rejected by PowerShell itself, because both row parameters are
+  mandatory. A blank column name is not detectable from rows — `Import-Csv` has already renamed it
+  `H1` by the time rows exist — so pass `-ExpectedColumns` if you need that caught. Everything else
+  in [What it refuses to do](#what-it-refuses-to-do) applies unchanged.

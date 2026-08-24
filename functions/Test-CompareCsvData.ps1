@@ -124,7 +124,7 @@ foreach ($name in 'sparse','newlines','symmetric','collation','column-order') {
 }
 
 ""
-"=== 1b. an embedded multi-line value that actually changes registers as Update (TEST-PLAN-Compare-CsvData.md 1.1) ==="
+"=== 1b. an embedded multi-line value that actually changes registers as Update ==="
 "    section 1's newlines/symmetric fixtures carry a multi-line value identical on both sides;"
 "    newline-diff (built for the family's own A8) is the only fixture where it actually differs"
 $mlr = Compare-CsvData -PreviousCsvPath "$fx\newline-diff\prev.csv" -CurrentCsvPath "$fx\newline-diff\curr.csv" -AnchorColumn 'ID' -IncludeSummary
@@ -653,7 +653,7 @@ foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
 }
 
 ""
-"=== 16. CRLF- and LF-terminated input carrying identical content produce identical results (TEST-PLAN-Compare-CsvData.md 1.2) ==="
+"=== 16. CRLF- and LF-terminated input carrying identical content produce identical results ==="
 '    every fixture this suite builds inline uses `r`n literally - only tests/fixtures/terminators/'
 "    carries genuine LF-only content reaching Import-Csv through this harness"
 $crlfR = Compare-CsvData -PreviousCsvPath "$fx\terminators\crlf_prev.csv" -CurrentCsvPath "$fx\terminators\crlf_curr.csv" -AnchorColumn 'ID' -IncludeSummary
@@ -678,7 +678,7 @@ $lfSorted51   = (@($lfR51.Changes)   | ForEach-Object { ($_.PSObject.Properties.
 Ok 'CRLF and LF rows are content-identical (order-insensitive) -- PS5.1' ($crlfSorted51 -ceq $lfSorted51) "crlf=[$crlfSorted51] lf=[$lfSorted51]"
 
 ""
-"=== 17. an accented (non-ASCII) value compares correctly (TEST-PLAN-Compare-CsvData.md 2.1) ==="
+"=== 17. an accented (non-ASCII) value compares correctly ==="
 "    narrower than the family's A2: -Encoding here is mandatory UTF8-only, so there is no ANSI"
 "    mis-decode trap to catch - what's untested is whether an accented value works at all through"
 "    Import-Csv and the function's own anchor lookup and value comparison"
@@ -702,7 +702,7 @@ Ok 'a value changing between two accented values registers as Update, byte-exact
 
 ""
 "=== 18. a literal 0-byte file is rejected with a message distinguishable from a header-only"
-"    file's rejection (TEST-PLAN-Compare-CsvData.md 2.2) ==="
+"    file's rejection ==="
 "    Import-Csv leaves both silent with Count=0 - Compare-CsvData.ps1 now checks file length"
 "    directly, inside the existing zero-row branch, so a missing file's own error path is untouched"
 $zeroFile = Join-Path $w 'zero_18.csv'
@@ -728,7 +728,7 @@ ThrowsPs51 'header-only Current: stays the OTHER message -- PS5.1'  $ps51_18.hdr
 
 ""
 "=== 19. a decorated path still works, and a missing input file is rejected clearly"
-"    (TEST-PLAN-Compare-CsvData.md 2.3, mirrors the family's Group E) ==="
+"    (mirrors the family's Group E) ==="
 "    the function passes -LiteralPath to Import-Csv, so this should work by construction - never"
 "    actually checked until now"
 $decoRoot = Join-Path $w "deco [b] caf$([char]0xE9)"
