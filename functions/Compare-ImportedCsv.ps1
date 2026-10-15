@@ -41,6 +41,9 @@ there vanishes from every day's file alike.
 Give SOURCE column names including the anchor. Order is irrelevant. Do not list the verdict column.
 Empty, whitespace-only and duplicate entries are rejected before either collection is examined.
 
+Columns named in -ExcludeFromComparison are left out of this check - from this list and from both
+collections - so an excluded column may be declared here or not.
+
 .PARAMETER ChangeTypeColumnName
 Name of the leading verdict column. Default 'ChangeType'.
 
@@ -55,6 +58,23 @@ It does not reach row matching. Anchors always match case-insensitively and trim
 
 Trimming is identity only - rows carry the collection's own value - and field values are never
 trimmed. Column names are always matched exactly.
+
+.PARAMETER ExcludeFromComparison
+Column names that never decide whether a row changed, but are still returned. An excluded column
+stays in its place among the current collection's columns: Add and Update rows carry today's value
+for it, Delete rows the previous day's, the same as every other column. A row whose only differences
+are in excluded columns is unchanged - counted in the summary, never returned.
+
+Matched exactly, letter case included, like every other column name.
+
+A name need exist in only ONE collection, so excluding a column one side lacks reconciles two
+column sets that would otherwise be rejected as different, in either direction. A current-only
+excluded column is $null on Delete rows, since the previous row has no value for it. A previous-only
+one appears nowhere, since the returned columns are always the current collection's.
+
+A name found in NEITHER collection throws, naming it and both column sets. The anchor column cannot
+be excluded. Excluding every other column is allowed: every row present on both sides is then
+unchanged, so only Adds and Deletes are returned.
 
 .PARAMETER IncludeSummary
 Changes the return shape. See OUTPUTS.
@@ -119,6 +139,7 @@ runs - with its own message, not this function's.
         [ValidateNotNullOrEmpty()][string[]]$ExpectedColumns,
         [ValidateNotNullOrEmpty()][string]$ChangeTypeColumnName = 'ChangeType',
         [switch]$CaseSensitive,
+        [ValidateNotNullOrEmpty()][string[]]$ExcludeFromComparison,
         [switch]$IncludeSummary
     )
 
@@ -146,6 +167,11 @@ runs - with its own message, not this function's.
             }) -join '; '
             throw "-ExpectedColumns lists $detail, naming the same column. Names are compared here ignoring letter case, because Import-Csv cannot produce a row carrying two members whose names differ only by case."
         }
+    }
+    # The anchor is never compared anyway - rows pair up because their anchors matched - so naming it
+    # here can only be a mistake.
+    if ($PSBoundParameters.ContainsKey('ExcludeFromComparison') -and $ExcludeFromComparison -ccontains $AnchorColumn) {
+        throw "-ExcludeFromComparison names the anchor column '$AnchorColumn'. The anchor identifies a row and cannot be excluded."
     }
 
     # Quote names in any set we report: padded and whitespace-only entries are otherwise invisible.
@@ -195,20 +221,35 @@ runs - with its own message, not this function's.
     $prevNames = @($previous[0].PSObject.Properties.Name | Sort-Object)
     $currNames = @($current[0].PSObject.Properties.Name  | Sort-Object)
 
+    # An excluded name need exist on only one side, and drops out of every column-set check below, so
+    # it reconciles a column one side lacks. A name on NEITHER side throws rather than warns: with
+    # exact matching a letter-case slip is the likely cause, and it would otherwise leave the column
+    # compared, silently.
+    $excludedNames = @()
+    if ($PSBoundParameters.ContainsKey('ExcludeFromComparison')) {
+        $excludedNames = @($ExcludeFromComparison)
+        $unmatched = @($excludedNames | Where-Object { $prevNames -cnotcontains $_ -and $currNames -cnotcontains $_ })
+        if ($unmatched.Count -gt 0) {
+            throw "-ExcludeFromComparison names $(Format-NameSet $unmatched), found on neither side (exact match required). Previous: $(Format-NameSet $prevNames) || Current: $(Format-NameSet $currNames)"
+        }
+    }
+    $prevChecked = @($prevNames | Where-Object { $excludedNames -cnotcontains $_ })
+    $currChecked = @($currNames | Where-Object { $excludedNames -cnotcontains $_ })
+
     if ($PSBoundParameters.ContainsKey('ExpectedColumns')) {
         # Catches a column missing from BOTH sides, which comparing them to each other cannot.
         # Export-Csv takes its header from the first object only.
-        $expected = @($ExpectedColumns | Sort-Object)
-        if (-not (Test-NameSetsEqual $expected $prevNames)) {
-            throw "Previous collection's columns do not match -ExpectedColumns. Expected: $(Format-NameSet $expected) || Previous: $(Format-NameSet $prevNames)"
+        $expected = @($ExpectedColumns | Where-Object { $excludedNames -cnotcontains $_ } | Sort-Object)
+        if (-not (Test-NameSetsEqual $expected $prevChecked)) {
+            throw "Previous collection's columns do not match -ExpectedColumns. Expected: $(Format-NameSet $expected) || Previous: $(Format-NameSet $prevChecked)"
         }
-        if (-not (Test-NameSetsEqual $expected $currNames)) {
-            throw "Current collection's columns do not match -ExpectedColumns. Expected: $(Format-NameSet $expected) || Current: $(Format-NameSet $currNames)"
+        if (-not (Test-NameSetsEqual $expected $currChecked)) {
+            throw "Current collection's columns do not match -ExpectedColumns. Expected: $(Format-NameSet $expected) || Current: $(Format-NameSet $currChecked)"
         }
         # Both now equal $expected, so they equal each other - no separate pairwise check needed.
     }
-    elseif (-not (Test-NameSetsEqual $prevNames $currNames)) {
-        throw "Column sets differ. Previous: $(Format-NameSet $prevNames) || Current: $(Format-NameSet $currNames)"
+    elseif (-not (Test-NameSetsEqual $prevChecked $currChecked)) {
+        throw "Column sets differ. Previous: $(Format-NameSet $prevChecked) || Current: $(Format-NameSet $currChecked)"
     }
     if ($prevNames -cnotcontains $AnchorColumn) {
         throw "Anchor column '$AnchorColumn' not found (exact match required). Columns: $(Format-NameSet $prevNames)"
@@ -229,7 +270,11 @@ runs - with its own message, not this function's.
 
     # Output column order is Current's physical order. Built once.
     $outputColumns = @($current[0].PSObject.Properties.Name)
-    $compareNames  = @($outputColumns | Where-Object { $_ -cne $AnchorColumn })
+    $compareNames  = @($outputColumns | Where-Object { $_ -cne $AnchorColumn -and $excludedNames -cnotcontains $_ })
+    # Current columns a Previous row lacks - only ever excluded ones. Found by exact name and never
+    # looked up on a Previous row: member access ignores letter case, so it could return a different
+    # column's value, and under StrictMode a missing member throws.
+    $currentOnly   = @($outputColumns | Where-Object { $prevNames -cnotcontains $_ })
 
     # Trimmed for IDENTITY only - a row emits whatever the collection held. ' E1' and 'E1' are one
     # employee; splitting them would produce a Delete plus an Add. Field values are never trimmed.
@@ -252,10 +297,10 @@ runs - with its own message, not this function's.
     }
 
     # One row per change: verdict column, then Current's columns in Current's order. Pipes straight
-    # to Export-Csv.
-    function New-DeltaRow($Verdict, $Source, $Columns, $VerdictColumn) {
+    # to Export-Csv. A column in $AbsentColumns is left $null, never read off $Source.
+    function New-DeltaRow($Verdict, $Source, $Columns, $VerdictColumn, $AbsentColumns = @()) {
         $o = [ordered]@{ $VerdictColumn = $Verdict }
-        foreach ($n in $Columns) { $o[$n] = $Source.$n }
+        foreach ($n in $Columns) { $o[$n] = if ($AbsentColumns -ccontains $n) { $null } else { $Source.$n } }
         [pscustomobject]$o
     }
 
@@ -297,9 +342,9 @@ runs - with its own message, not this function's.
             } else { $unchanged++ }
         } else {
             # No Current row, so a Delete row carries Previous's values - the one place the collection
-            # mixes two points in time.
+            # mixes two points in time. A Current-only column has no Previous value, so stays $null.
             $deletes++
-            $changes.Add((New-DeltaRow 'Delete' $prev $outputColumns $ChangeTypeColumnName))
+            $changes.Add((New-DeltaRow 'Delete' $prev $outputColumns $ChangeTypeColumnName $currentOnly))
         }
     }
 

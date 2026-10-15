@@ -761,11 +761,120 @@ Ok 'a path decorated with [ ], and a non-ASCII character, is content-identical t
 ThrowsPs51 'a missing input file is rejected with a clear, file-naming message -- PS5.1' $ps51_19.missing 'Could not find file'
 
 ""
+"=== 20. -ExcludeFromComparison: excluded columns never decide a change, but are still returned ==="
+"    exclude-columns pairs a Previous-only column (OldOnly) with a Current-only one (NewOnly), so"
+"    excluding them is also what makes the two column sets agree. Asserted against exact values,"
+"    since Test-CompareImportedCsv.ps1's equivalence checks pass when both functions are wrong alike"
+# One string per summary, so a wrong count shows all four. An ERROR string from the PS5.1 child is
+# passed through as is, so the failure detail says why.
+function SummaryText($r) {
+    if ($r -is [string]) { return $r }
+    "A=$($r.Summary.Adds) U=$($r.Summary.Updates) D=$($r.Summary.Deletes) N=$($r.Summary.Unchanged)"
+}
+$exP = "$fx\exclude-columns\prev.csv"; $exC = "$fx\exclude-columns\curr.csv"
+$exAll = 'Stamp','NewOnly','OldOnly'
+$exR = Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison $exAll -IncludeSummary
+Ok 'summary counts are right' ((SummaryText $exR) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $exR)
+$ex1 = @($exR.Changes) | Where-Object ID -eq '1'
+$ex2 = @($exR.Changes) | Where-Object ID -eq '2'
+$ex3 = @($exR.Changes) | Where-Object ID -eq '3'
+Ok 'a row differing only in an excluded column is not returned' ($null -eq $ex1) "found: $($null -ne $ex1)"
+Ok 'an Update carries Current''s values for excluded columns' ($ex2.ChangeType -ceq 'Update' -and $ex2.NewOnly -ceq 'n2' -and $ex2.Stamp -ceq '2026-02-01') `
+   "ChangeType=$($ex2.ChangeType) NewOnly='$($ex2.NewOnly)' Stamp='$($ex2.Stamp)'"
+Ok 'a Delete leaves a Current-only column $null and carries Previous''s value for the rest' ($ex3.ChangeType -ceq 'Delete' -and $null -eq $ex3.NewOnly -and $ex3.Stamp -ceq '2026-01-01') `
+   "ChangeType=$($ex3.ChangeType) NewOnlyIsNull=$($null -eq $ex3.NewOnly) Stamp='$($ex3.Stamp)'"
+$exCols = @(@($exR.Changes) | ForEach-Object { @($_.PSObject.Properties.Name) -join ',' } | Sort-Object -Unique)
+Ok 'every row has Current''s columns in Current''s order, and no Previous-only column' (($exCols -join ' ; ') -ceq 'ChangeType,ID,NewOnly,Name,Dept,Stamp') "columns: $($exCols -join ' ; ')"
+
+# A Delete reading a Current-only column off the Previous row throws under StrictMode, so the same
+# run is repeated in a child process that sets it.
+$exStrictProbe = @"
+Set-StrictMode -Version 2.0
+. '$PSScriptRoot\Compare-CsvData.ps1'
+`$r = Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','NewOnly','OldOnly' -Encoding UTF8 -DelimiterName comma -IncludeSummary
+`$d = @(`$r.Changes | Where-Object { `$_.ID -eq '3' })[0]
+'A=' + `$r.Summary.Adds + ' U=' + `$r.Summary.Updates + ' D=' + `$r.Summary.Deletes + ' N=' + `$r.Summary.Unchanged + ' deleteNewOnlyIsNull=' + (`$null -eq `$d.NewOnly) + ' deleteStamp=' + `$d.Stamp
+"@
+foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
+    $exStrict = & $hostExe[1] -NoProfile -NonInteractive -Command $exStrictProbe 2>&1
+    Ok "the same run under StrictMode 2.0 -- PS$($hostExe[0])" ("$exStrict" -ceq 'A=1 U=1 D=1 N=1 deleteNewOnlyIsNull=True deleteStamp=2026-01-01') "got=[$exStrict]"
+}
+
+Throws 'without an exclusion the differing column sets are rejected' { Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' } 'Column sets differ'
+Throws 'excluding Stamp alone leaves NewOnly and OldOnly, still rejected' { Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp' } 'Column sets differ'
+# Exact matching makes a letter-case slip the likely mistake. The message names the unmatched name
+# and both column sets - OldOnly is Previous's alone, NewOnly Current's alone.
+Throws 'a name on neither side throws, naming it and both column sets' { Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison 'stamp' } "'stamp', found on neither side.*'OldOnly'.*\|\|.*'NewOnly'"
+Throws 'the anchor cannot be excluded' { Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison 'ID' } 'names the anchor column'
+
+$exDeclAll  = Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison $exAll -ExpectedColumns 'ID','Name','Dept','Stamp','NewOnly','OldOnly' -IncludeSummary
+Ok '-ExpectedColumns passes with the excluded names declared' ((SummaryText $exDeclAll) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $exDeclAll)
+$exDeclNone = Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison $exAll -ExpectedColumns 'ID','Name','Dept' -IncludeSummary
+Ok '-ExpectedColumns passes with the excluded names left out' ((SummaryText $exDeclNone) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $exDeclNone)
+Throws '-ExpectedColumns still catches a compared column it does not declare' { Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison $exAll -ExpectedColumns 'ID','Name' } 'do not match -ExpectedColumns'
+
+$exEvery = Compare-CsvData -PreviousCsvPath $exP -CurrentCsvPath $exC -AnchorColumn 'ID' -ExcludeFromComparison 'Name','Dept','Stamp','NewOnly','OldOnly' -IncludeSummary
+Ok 'excluding every non-anchor column leaves only Adds and Deletes' ((SummaryText $exEvery) -ceq 'A=1 U=0 D=1 N=2') (SummaryText $exEvery)
+
+# The verdict-column check reads every Current column, excluded or not.
+$exTp = W 'ex_ct_p.csv' "ID,Name`r`n1,A`r`n"
+$exTc = W 'ex_ct_c.csv' "ID,changetype,Name`r`n1,x,A`r`n"
+Throws 'an excluded Current-only column named changetype still collides' { Compare-CsvData -PreviousCsvPath $exTp -CurrentCsvPath $exTc -AnchorColumn 'ID' -ExcludeFromComparison 'changetype' } 'collides with the verdict column name'
+
+# Member access ignores letter case, so a Delete reading Current-only Stamp off the Previous row
+# would get Previous's stamp instead of $null.
+$exVp = W 'ex_cv_p.csv' "ID,Name,stamp`r`n1,A,prevStamp1`r`n2,B,prevStamp2`r`n"
+$exVc = W 'ex_cv_c.csv' "ID,Name,Stamp`r`n1,A2,currStamp1`r`n"
+$exV = Compare-CsvData -PreviousCsvPath $exVp -CurrentCsvPath $exVc -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','stamp' -IncludeSummary
+Ok 'Stamp and stamp, one per side, are two columns: summary counts are right' ((SummaryText $exV) -ceq 'A=0 U=1 D=1 N=0') (SummaryText $exV)
+$exVd = @($exV.Changes) | Where-Object ID -eq '2'
+Ok 'a Delete leaves Current-only Stamp $null, never reading Previous''s stamp' ($exVd.ChangeType -ceq 'Delete' -and $null -eq $exVd.Stamp) "ChangeType=$($exVd.ChangeType) Stamp='$($exVd.Stamp)'"
+
+"    PS5.1 twin. The StrictMode run above is already its own two-host loop"
+$ps51_20 = Invoke-OnPS51 @{
+    main       = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','NewOnly','OldOnly' -IncludeSummary"
+    noExclude  = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID'"
+    stampOnly  = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp'"
+    wrongCase  = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'stamp'"
+    anchor     = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'ID'"
+    declAll    = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','NewOnly','OldOnly' -ExpectedColumns 'ID','Name','Dept','Stamp','NewOnly','OldOnly' -IncludeSummary"
+    declNone   = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','NewOnly','OldOnly' -ExpectedColumns 'ID','Name','Dept' -IncludeSummary"
+    declNoDept = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','NewOnly','OldOnly' -ExpectedColumns 'ID','Name'"
+    every      = "Compare-CsvData -PreviousCsvPath '$exP' -CurrentCsvPath '$exC' -AnchorColumn 'ID' -ExcludeFromComparison 'Name','Dept','Stamp','NewOnly','OldOnly' -IncludeSummary"
+    changetype = "Compare-CsvData -PreviousCsvPath '$exTp' -CurrentCsvPath '$exTc' -AnchorColumn 'ID' -ExcludeFromComparison 'changetype'"
+    casePair   = "Compare-CsvData -PreviousCsvPath '$exVp' -CurrentCsvPath '$exVc' -AnchorColumn 'ID' -ExcludeFromComparison 'Stamp','stamp' -IncludeSummary"
+}
+$exR51 = $ps51_20.main
+Ok 'summary counts are right -- PS5.1' ((SummaryText $exR51) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $exR51)
+$ex1_51 = @($exR51.Changes) | Where-Object ID -eq '1'
+$ex2_51 = @($exR51.Changes) | Where-Object ID -eq '2'
+$ex3_51 = @($exR51.Changes) | Where-Object ID -eq '3'
+Ok 'a row differing only in an excluded column is not returned -- PS5.1' ($null -eq $ex1_51) "found: $($null -ne $ex1_51)"
+Ok 'an Update carries Current''s values for excluded columns -- PS5.1' ($ex2_51.ChangeType -ceq 'Update' -and $ex2_51.NewOnly -ceq 'n2' -and $ex2_51.Stamp -ceq '2026-02-01') `
+   "ChangeType=$($ex2_51.ChangeType) NewOnly='$($ex2_51.NewOnly)' Stamp='$($ex2_51.Stamp)'"
+Ok 'a Delete leaves a Current-only column $null and carries Previous''s value for the rest -- PS5.1' ($ex3_51.ChangeType -ceq 'Delete' -and $null -eq $ex3_51.NewOnly -and $ex3_51.Stamp -ceq '2026-01-01') `
+   "ChangeType=$($ex3_51.ChangeType) NewOnlyIsNull=$($null -eq $ex3_51.NewOnly) Stamp='$($ex3_51.Stamp)'"
+$exCols51 = @(@($exR51.Changes) | ForEach-Object { @($_.PSObject.Properties.Name) -join ',' } | Sort-Object -Unique)
+Ok 'every row has Current''s columns in Current''s order, and no Previous-only column -- PS5.1' (($exCols51 -join ' ; ') -ceq 'ChangeType,ID,NewOnly,Name,Dept,Stamp') "columns: $($exCols51 -join ' ; ')"
+ThrowsPs51 'without an exclusion the differing column sets are rejected -- PS5.1' $ps51_20.noExclude 'Column sets differ'
+ThrowsPs51 'excluding Stamp alone leaves NewOnly and OldOnly, still rejected -- PS5.1' $ps51_20.stampOnly 'Column sets differ'
+ThrowsPs51 'a name on neither side throws, naming it and both column sets -- PS5.1' $ps51_20.wrongCase "'stamp', found on neither side.*'OldOnly'.*\|\|.*'NewOnly'"
+ThrowsPs51 'the anchor cannot be excluded -- PS5.1' $ps51_20.anchor 'names the anchor column'
+Ok '-ExpectedColumns passes with the excluded names declared -- PS5.1' ((SummaryText $ps51_20.declAll) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $ps51_20.declAll)
+Ok '-ExpectedColumns passes with the excluded names left out -- PS5.1' ((SummaryText $ps51_20.declNone) -ceq 'A=1 U=1 D=1 N=1') (SummaryText $ps51_20.declNone)
+ThrowsPs51 '-ExpectedColumns still catches a compared column it does not declare -- PS5.1' $ps51_20.declNoDept 'do not match -ExpectedColumns'
+Ok 'excluding every non-anchor column leaves only Adds and Deletes -- PS5.1' ((SummaryText $ps51_20.every) -ceq 'A=1 U=0 D=1 N=2') (SummaryText $ps51_20.every)
+ThrowsPs51 'an excluded Current-only column named changetype still collides -- PS5.1' $ps51_20.changetype 'collides with the verdict column name'
+Ok 'Stamp and stamp, one per side, are two columns: summary counts are right -- PS5.1' ((SummaryText $ps51_20.casePair) -ceq 'A=0 U=1 D=1 N=0') (SummaryText $ps51_20.casePair)
+$exVd51 = @($ps51_20.casePair.Changes) | Where-Object ID -eq '2'
+Ok 'a Delete leaves Current-only Stamp $null, never reading Previous''s stamp -- PS5.1' ($exVd51.ChangeType -ceq 'Delete' -and $null -eq $exVd51.Stamp) "ChangeType=$($exVd51.ChangeType) Stamp='$($exVd51.Stamp)'"
+
+""
 # A check that silently stops running is worse than one that fails - assert the denominator, the
 # same discipline the repo's own verification harnesses hold themselves to.
 # Counted BEFORE this assertion runs, so the total printed below is this number plus one.
 # Update it deliberately when adding a check - that is the point.
-$expected = 182
+$expected = 216
 Ok "all $expected preceding checks ran (guards against a check vanishing)" (($pass + $fail) -eq $expected) "ran $($pass + $fail)"
 
 ""

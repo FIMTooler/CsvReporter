@@ -59,9 +59,10 @@ difference in one place.
 | `-AnchorColumn` | header name that identifies a row and joins the two files on; matched exactly, letter case included (required) |
 | `-Encoding` | must be `UTF8` — the only value Windows PowerShell 5.1 and PowerShell 7 read identically (required) |
 | `-DelimiterName` | `comma`, `tab`, `semicolon` or `pipe`; must match what wrote the files (required) |
-| `-ExpectedColumns` | the column names your transform produces, anchor included; both files must match this set exactly |
+| `-ExpectedColumns` | the column names your transform produces, anchor included; both files must match this set exactly, apart from columns named in `-ExcludeFromComparison` |
 | `-ChangeTypeColumnName` | name of the leading verdict column; default `ChangeType` |
 | `-CaseSensitive` | compares field **values** case-sensitively; does not reach anchor matching |
+| `-ExcludeFromComparison` | columns that never decide whether a row changed, but are still returned; each may exist in only one file |
 | `-IncludeSummary` | changes the return shape — see [Output](#output) |
 
 ### -ExpectedColumns
@@ -72,6 +73,9 @@ file alike, and comparing the two files to each other cannot detect that. Give t
 names, anchor included; order is irrelevant, and the verdict column is never listed. Empty,
 whitespace-only and duplicate entries are rejected before either file is opened, and a mismatch
 against either file names the side that diverged.
+
+Columns named in `-ExcludeFromComparison` are left out of this check — from your list and from both
+files — so listing them here is optional.
 
 ### -ChangeTypeColumnName and -CaseSensitive
 
@@ -84,6 +88,34 @@ surrounding whitespace.
 emit a Delete plus an Add instead of recognizing the same record. Trimming is identity-only — an
 emitted row keeps the file's own value — and field values are never trimmed, so a padded value is
 still a real difference.
+
+### -ExcludeFromComparison
+
+Names columns that never decide whether a row changed, but are still returned — a timestamp, say,
+that moves on every export but should ride along on the rows that come back:
+
+```powershell
+$changes = Compare-CsvData -PreviousCsvPath .\yesterday.csv -CurrentCsvPath .\today.csv `
+                            -AnchorColumn EmployeeID -Encoding UTF8 -DelimiterName comma `
+                            -ExcludeFromComparison LastModifiedDate
+```
+
+- **The column stays in the returned rows**, in its place among today's columns. An Add or Update
+  row carries today's value for it, a Delete row the previous day's — the same as every other column.
+- **A change only in an excluded column returns nothing.** That row counts as unchanged in the
+  summary, so a new value in an excluded column reaches you only on a row returned because something
+  else changed.
+- **A name need exist in only one file**, so excluding the odd column out lets through two files
+  whose columns would otherwise be rejected as different — in either direction. A column only
+  today's file has is `$null` on a Delete row, since the previous day's row has no value for it; a
+  column only the previous day's file has appears nowhere, since returned rows always carry today's
+  columns. Excluded names are left out of the `-ExpectedColumns` check too, so listing them there is
+  optional.
+- **Names are matched exactly, letter case included.** A name found in neither file stops the run,
+  naming it and both files' columns, so a mistyped name cannot leave its column compared without you
+  knowing.
+- **The anchor cannot be excluded.** Excluding every other column is allowed: every row present in
+  both files is then unchanged, and only Adds and Deletes come back.
 
 ## What your calling code must do
 
@@ -107,20 +139,25 @@ still a real difference.
 7. **Treat a column-name change as a deploy step.** Adding, removing, renaming or re-capitalising a
    field makes the next run stop, because the stored previous-day file still has the old shape — that
    is deliberate, since otherwise a schema change would make every row look changed. Moving to a new
-   shape means updating the field name in your transform, `-AnchorColumn` and `-ExpectedColumns` if
-   either names the changed field, and replacing the stored previous-day file, together.
+   shape means updating the field name in your transform, and in `-AnchorColumn`, `-ExpectedColumns`
+   or `-ExcludeFromComparison` if any of them names the changed field, and replacing the stored
+   previous-day file, together. A column named in `-ExcludeFromComparison` is the exception: it may
+   exist in only one file, so adding or removing it does not stop the run.
 
 ## What it refuses to do
 
 These all stop the run with a message naming the cause:
 
 - either file is empty, or has a header and no rows
-- the two files do not have the same columns (or don't match `-ExpectedColumns`, when supplied)
+- the two files do not have the same columns (or don't match `-ExpectedColumns`, when supplied) —
+  columns named in `-ExcludeFromComparison` are left out of that comparison
 - a column name is blank — PowerShell renames it to `H1`, and that name would reach the output
 - the anchor column is missing, misspelled, or a different letter case than the header
 - a row has a blank anchor, or two rows share one
 - a source column collides with the verdict column name
 - `-ExpectedColumns` has a blank entry, or names the same column twice
+- `-ExcludeFromComparison` names the anchor column
+- `-ExcludeFromComparison` names a column found in neither file
 
 ## Two things that might surprise you
 
@@ -174,8 +211,8 @@ written instead of the thousands you meant to write. Always pipe the rows throug
 
 The verdicts are identical, deliberately: the two functions share every line of comparison logic, so
 they can never disagree on the same data. Everything above about the anchor, `-ExpectedColumns`,
-`-ChangeTypeColumnName`, `-CaseSensitive`, `-IncludeSummary` and the two return shapes applies
-unchanged. What changes:
+`-ChangeTypeColumnName`, `-CaseSensitive`, `-ExcludeFromComparison`, `-IncludeSummary` and the two
+return shapes applies unchanged. What changes:
 
 - **`-PreviousRows` and `-CurrentRows` replace the two path parameters.** Named parameters only, no
   pipeline input — two same-shaped collections down one pipeline would leave which one is Previous

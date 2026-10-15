@@ -43,12 +43,12 @@ function Test-Equivalence {
 
 # The rejection paths (duplicate anchor, mismatched columns) are ported verbatim too, so a genuine
 # rejection fixture must throw the IDENTICAL message either way, not just an equally-shaped one.
-function Test-RejectionEquivalence($Label, $PrevPath, $CurrPath) {
+function Test-RejectionEquivalence($Label, $PrevPath, $CurrPath, $FileArgs = @{}, $RowArgs = @{}) {
     $prevRows = @(Import-Csv -LiteralPath $PrevPath -Encoding UTF8)
     $currRows = @(Import-Csv -LiteralPath $CurrPath -Encoding UTF8)
     $fileMsg = $null; $rowMsg = $null
-    try { $null = Compare-CsvData -PreviousCsvPath $PrevPath -CurrentCsvPath $CurrPath -AnchorColumn 'ID' } catch { $fileMsg = $_.Exception.Message }
-    try { $null = Compare-ImportedCsv -PreviousRows $prevRows -CurrentRows $currRows -AnchorColumn 'ID' } catch { $rowMsg = $_.Exception.Message }
+    try { $null = Compare-CsvData -PreviousCsvPath $PrevPath -CurrentCsvPath $CurrPath -AnchorColumn 'ID' @FileArgs } catch { $fileMsg = $_.Exception.Message }
+    try { $null = Compare-ImportedCsv -PreviousRows $prevRows -CurrentRows $currRows -AnchorColumn 'ID' @RowArgs } catch { $rowMsg = $_.Exception.Message }
     Ok "$Label - both reject, identical message" ($null -ne $fileMsg -and $fileMsg -ceq $rowMsg) "file='$fileMsg' rows='$rowMsg'"
 }
 
@@ -98,12 +98,12 @@ function Test-EquivString([string]`$PrevPath, [string]`$CurrPath, [string]`$Deli
     `$sr = Get-SortedContent `$rr.Changes
     "A=`$(`$rf.Summary.Adds),U=`$(`$rf.Summary.Updates),D=`$(`$rf.Summary.Deletes),N=`$(`$rf.Summary.Unchanged)|A2=`$(`$rr.Summary.Adds),U2=`$(`$rr.Summary.Updates),D2=`$(`$rr.Summary.Deletes),N2=`$(`$rr.Summary.Unchanged)|match=`$(`$sf -ceq `$sr)"
 }
-function Test-RejectString([string]`$PrevPath, [string]`$CurrPath) {
+function Test-RejectString([string]`$PrevPath, [string]`$CurrPath, [hashtable]`$FileArgs = @{}, [hashtable]`$RowArgs = @{}) {
     `$vp = @(Import-Csv -LiteralPath `$PrevPath -Encoding UTF8)
     `$vc = @(Import-Csv -LiteralPath `$CurrPath -Encoding UTF8)
     `$fm = `$null; `$rm = `$null
-    try { `$null = Compare-CsvData -PreviousCsvPath `$PrevPath -CurrentCsvPath `$CurrPath -AnchorColumn 'ID' } catch { `$fm = `$_.Exception.Message }
-    try { `$null = Compare-ImportedCsv -PreviousRows `$vp -CurrentRows `$vc -AnchorColumn 'ID' } catch { `$rm = `$_.Exception.Message }
+    try { `$null = Compare-CsvData -PreviousCsvPath `$PrevPath -CurrentCsvPath `$CurrPath -AnchorColumn 'ID' @FileArgs } catch { `$fm = `$_.Exception.Message }
+    try { `$null = Compare-ImportedCsv -PreviousRows `$vp -CurrentRows `$vc -AnchorColumn 'ID' @RowArgs } catch { `$rm = `$_.Exception.Message }
     "match=`$(`$null -ne `$fm -and `$fm -ceq `$rm)|file=`$fm|rows=`$rm"
 }
 $($lines -join "`n")
@@ -131,7 +131,8 @@ Ok 'Get-SortedContent agrees on genuinely identical rows' ((Get-SortedContent $r
 ""
 "=== 1. equivalence: Compare-CsvData (file paths) and Compare-ImportedCsv (Import-Csv of the same"
 "    files) agree - over the fixtures Compare-CsvData's own suite already exercises, plus the"
-"    parameters (-ExpectedColumns, -ChangeTypeColumnName, -CaseSensitive) that carry over unchanged ==="
+"    parameters (-ExpectedColumns, -ChangeTypeColumnName, -CaseSensitive, -ExcludeFromComparison)"
+"    that carry over unchanged ==="
 Test-Equivalence 'sparse'         "$fx\sparse\prev.csv"         "$fx\sparse\curr.csv"
 Test-Equivalence 'newlines'       "$fx\newlines\prev.csv"       "$fx\newlines\curr.csv"
 Test-Equivalence 'symmetric'      "$fx\symmetric\prev.csv"      "$fx\symmetric\curr.csv"
@@ -160,6 +161,24 @@ Test-Equivalence 'column-order with -ExpectedColumns' "$fx\column-order\prev.csv
     -FileArgs @{ ExpectedColumns = @('ID','Alpha','Beta','Gamma') } -RowArgs @{ ExpectedColumns = @('ID','Alpha','Beta','Gamma') }
 Test-Equivalence 'sparse with -ChangeTypeColumnName' "$fx\sparse\prev.csv" "$fx\sparse\curr.csv" `
     -FileArgs @{ ChangeTypeColumnName = 'Verdict' } -RowArgs @{ ChangeTypeColumnName = 'Verdict' }
+# exclude-columns has OldOnly in Previous only and NewOnly in Current only, so only an exclusion
+# lets it run. The case pair puts 'stamp' on one side and 'Stamp' on the other: two columns, since
+# names match exactly, though member access would read either one for the other.
+$exAll = @('Stamp','NewOnly','OldOnly')
+$exCasePrev = W 'ex_case_p.csv' "ID,Name,stamp`r`n1,A,prevStamp1`r`n2,B,prevStamp2`r`n"
+$exCaseCurr = W 'ex_case_c.csv' "ID,Name,Stamp`r`n1,A2,currStamp1`r`n"
+Test-Equivalence 'exclude-columns with -ExcludeFromComparison' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = $exAll } -RowArgs @{ ExcludeFromComparison = $exAll }
+Test-Equivalence 'exclude-columns, excluded names declared in -ExpectedColumns' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = $exAll; ExpectedColumns = @('ID','Name','Dept','Stamp','NewOnly','OldOnly') } `
+    -RowArgs  @{ ExcludeFromComparison = $exAll; ExpectedColumns = @('ID','Name','Dept','Stamp','NewOnly','OldOnly') }
+Test-Equivalence 'exclude-columns, excluded names left out of -ExpectedColumns' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = $exAll; ExpectedColumns = @('ID','Name','Dept') } `
+    -RowArgs  @{ ExcludeFromComparison = $exAll; ExpectedColumns = @('ID','Name','Dept') }
+Test-Equivalence 'exclude-columns, every non-anchor column excluded' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = @('Name','Dept','Stamp','NewOnly','OldOnly') } -RowArgs @{ ExcludeFromComparison = @('Name','Dept','Stamp','NewOnly','OldOnly') }
+Test-Equivalence 'Stamp and stamp excluded, one per side' $exCasePrev $exCaseCurr `
+    -FileArgs @{ ExcludeFromComparison = @('Stamp','stamp') } -RowArgs @{ ExcludeFromComparison = @('Stamp','stamp') }
 
 "    PS5.1 twin. Each label runs entirely inside the child - Import-Csv, both function calls, and"
 "    the comparison all happen there, since Compare-ImportedCsv takes row objects, not paths, so"
@@ -182,6 +201,11 @@ $calls1 = @{
     valueCaseOn     = "Test-EquivString '$caseValuePrev' '$caseValueCurr' 'comma' @{CaseSensitive=`$true} @{CaseSensitive=`$true}"
     expectedColumns = "Test-EquivString '$fx\column-order\prev.csv' '$fx\column-order\curr.csv' 'comma' @{ExpectedColumns=@('ID','Alpha','Beta','Gamma')} @{ExpectedColumns=@('ID','Alpha','Beta','Gamma')}"
     changeTypeName  = "Test-EquivString '$fx\sparse\prev.csv' '$fx\sparse\curr.csv' 'comma' @{ChangeTypeColumnName='Verdict'} @{ChangeTypeColumnName='Verdict'}"
+    excludeColumns  = "Test-EquivString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' 'comma' @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly')} @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly')}"
+    excludeDeclAll  = "Test-EquivString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' 'comma' @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly');ExpectedColumns=@('ID','Name','Dept','Stamp','NewOnly','OldOnly')} @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly');ExpectedColumns=@('ID','Name','Dept','Stamp','NewOnly','OldOnly')}"
+    excludeDeclNone = "Test-EquivString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' 'comma' @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly');ExpectedColumns=@('ID','Name','Dept')} @{ExcludeFromComparison=@('Stamp','NewOnly','OldOnly');ExpectedColumns=@('ID','Name','Dept')}"
+    excludeEvery    = "Test-EquivString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' 'comma' @{ExcludeFromComparison=@('Name','Dept','Stamp','NewOnly','OldOnly')} @{ExcludeFromComparison=@('Name','Dept','Stamp','NewOnly','OldOnly')}"
+    excludeCasePair = "Test-EquivString '$exCasePrev' '$exCaseCurr' 'comma' @{ExcludeFromComparison=@('Stamp','stamp')} @{ExcludeFromComparison=@('Stamp','stamp')}"
 }
 $results1 = Invoke-OnPS51 $calls1
 foreach ($key in $calls1.Keys) { OkPs51Equiv $key $results1[$key] }
@@ -193,6 +217,18 @@ Test-RejectionEquivalence 'duplicates'                    "$fx\duplicates\prev.c
 Test-RejectionEquivalence 'mismatch: extra in Current'    "$fx\mismatched-columns\prev.csv"        "$fx\mismatched-columns\curr.csv"
 Test-RejectionEquivalence 'mismatch: extra in Previous'   "$fx\mismatched-columns\prev_extra.csv"  "$fx\mismatched-columns\curr_extra.csv"
 Test-RejectionEquivalence 'mismatch: renamed column'      "$fx\mismatched-columns\prev_renamed.csv" "$fx\mismatched-columns\curr_renamed.csv"
+# The -ExcludeFromComparison rejections. Its -ExpectedColumns mismatch is left out: that message
+# says "file" in one function and "collection" in the other, by design.
+Test-RejectionEquivalence 'exclude-columns, Stamp alone excluded' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = @('Stamp') } -RowArgs @{ ExcludeFromComparison = @('Stamp') }
+Test-RejectionEquivalence 'exclude-columns, a name on neither side' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = @('stamp') } -RowArgs @{ ExcludeFromComparison = @('stamp') }
+Test-RejectionEquivalence 'exclude-columns, the anchor excluded' "$fx\exclude-columns\prev.csv" "$fx\exclude-columns\curr.csv" `
+    -FileArgs @{ ExcludeFromComparison = @('ID') } -RowArgs @{ ExcludeFromComparison = @('ID') }
+$exVerdictPrev = W 'ex_verdict_p.csv' "ID,Name`r`n1,A`r`n"
+$exVerdictCurr = W 'ex_verdict_c.csv' "ID,changetype,Name`r`n1,x,A`r`n"
+Test-RejectionEquivalence 'an excluded Current-only changetype column collides' $exVerdictPrev $exVerdictCurr `
+    -FileArgs @{ ExcludeFromComparison = @('changetype') } -RowArgs @{ ExcludeFromComparison = @('changetype') }
 
 "    PS5.1 twin"
 $calls2 = @{
@@ -200,6 +236,10 @@ $calls2 = @{
     mismatchCurrent  = "Test-RejectString '$fx\mismatched-columns\prev.csv' '$fx\mismatched-columns\curr.csv'"
     mismatchPrevious = "Test-RejectString '$fx\mismatched-columns\prev_extra.csv' '$fx\mismatched-columns\curr_extra.csv'"
     mismatchRenamed  = "Test-RejectString '$fx\mismatched-columns\prev_renamed.csv' '$fx\mismatched-columns\curr_renamed.csv'"
+    excludeStampOnly = "Test-RejectString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' @{ExcludeFromComparison=@('Stamp')} @{ExcludeFromComparison=@('Stamp')}"
+    excludeWrongCase = "Test-RejectString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' @{ExcludeFromComparison=@('stamp')} @{ExcludeFromComparison=@('stamp')}"
+    excludeAnchor    = "Test-RejectString '$fx\exclude-columns\prev.csv' '$fx\exclude-columns\curr.csv' @{ExcludeFromComparison=@('ID')} @{ExcludeFromComparison=@('ID')}"
+    excludeVerdict   = "Test-RejectString '$exVerdictPrev' '$exVerdictCurr' @{ExcludeFromComparison=@('changetype')} @{ExcludeFromComparison=@('changetype')}"
 }
 $results2 = Invoke-OnPS51 $calls2
 foreach ($key in $calls2.Keys) { OkPs51Equiv $key $results2[$key] }
@@ -369,7 +409,7 @@ foreach ($hostExe in @(@('7','pwsh'),@('51','powershell'))) {
 # same discipline this repo's own verification harnesses hold themselves to.
 # Counted BEFORE this assertion runs, so the total printed below is this number plus one.
 # Update it deliberately when adding a check - that is the point.
-$expected = 85
+$expected = 103
 Ok "all $expected preceding checks ran (guards against a check vanishing)" (($pass + $fail) -eq $expected) "ran $($pass + $fail)"
 
 ""
