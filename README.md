@@ -494,6 +494,28 @@ whether a record changed. This script has no per-column view, so a record whose 
 exactly that — `"   "` against `""` — is not written at all when the switch is on: it counts as
 unchanged, the same as a record with no differences.
 
+**`-ExcludeFromComparison`** names columns that never decide whether a record changed, but still
+travel in the output — a timestamp, say, that moves on every export but should ride along on the
+rows that are written:
+
+```powershell
+.\CompareCSVs_Delta.ps1 -PreviousCSVFile .\prev.csv -CurrentCSVFile .\curr.csv `
+  -AnchorColumn EmployeeID -OutputFolder .\out -ExcludeFromComparison @('LastModifiedDate')
+```
+
+- **The column stays in the output**, in its place among Current's columns. An Add or Update row
+  carries Current's value for it, a Delete row Previous's — the same as every other column.
+- **A change only in an excluded column writes nothing.** That record counts as unchanged, so a new
+  value in an excluded column reaches the output only on a row written because something else
+  changed.
+- **A name need exist in only one file**, so excluding the odd column out reconciles two files whose
+  column sets would otherwise be rejected as mismatched — in either direction. A Current-only column
+  is empty on Delete rows, since Previous has no value for it; a Previous-only column appears nowhere,
+  since the output columns are always Current's.
+- **A name found in neither file is a warning**, naming the unmatched columns and both header sets.
+- **The anchor cannot be excluded.** Excluding every other column is allowed: each record present in
+  both files is then unchanged, leaving a feed of Adds and Deletes only.
+
 **`-NormalizeHeaderNames`** opts in to the family's trim+lowercase header treatment. Off by default:
 this script's output headers are Current's own names verbatim, and lowercasing them would silently
 break a case-sensitive downstream consumer.

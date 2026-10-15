@@ -155,6 +155,11 @@ signal about the change, not a performance curiosity.
   `empty-values/` fixture's ID=5 (added 2026-08-23), the one record whose only difference is exactly
   that — proving the switch can turn a whole record from changed to unchanged, and that `Delta` omits
   it the same as any other unchanged record — all five scripts (2026-08-23)
+- `CompareCSVs_Delta.ps1`'s `-ExcludeFromComparison`, against the `exclude-columns/` fixture: a
+  record differing only in excluded columns is not written, an excluded column keeps Current's value
+  on Add/Update rows and Previous's on a Delete, a Current-only excluded column is empty on a Delete
+  in both output modes, a name in neither file warns, and both the no-parameter column mismatch and an
+  excluded anchor are rejected (2026-10-14)
 
 All 8 of the silent-wrongness group's cases are now covered.
 
@@ -176,7 +181,7 @@ about how much was checked:
 | Agreement | 84 | 5.1 and 7 | seconds |
 | Malformed | 160 | 5.1 and 7 | seconds |
 | Memory | **1** | 7 only | minutes — 15 runs over a 100K-row fixture |
-| Core | 417 | 5.1 and 7 | seconds |
+| Core | 441 | 5.1 and 7 | seconds |
 
 A green Memory run confirms one inequality. It is not a broad statement about performance.
 
@@ -210,6 +215,7 @@ Two deliberate exceptions, both providing coverage nothing else does — **do no
 | `newline-diff/` | Three rows: one whose only change is inside a multi-line quoted value, one whose multi-line value is unchanged but another column changed (control against false-positive "any multi-line field" flagging), and one fully unchanged plain-value row (control). CRLF row terminators, but the embedded newline inside the quoted values is bare LF - deliberately mismatched from the file's own convention, so quote-tracking is proven independent of it without a separate fixture. Used by `-Mode Core`'s A8. |
 | `delimiters/` | `sparse/`'s content (all four change types), in two delimiter variants: `prev.csv`/`curr.csv` (tab-delimited) and `prev_comma.csv`/`curr_comma.csv` (comma-delimited), otherwise identical. No value contains a comma or a tab, so a literal tab-to-comma substitution on the tab-delimited report is an exact comparison against the comma-delimited report. Used by `-Mode Core`'s A3. |
 | `empty-values/` | Five rows, five columns: a cleared value (populated in Previous, empty in Current), an added value (the reverse), a column empty on both sides, and a whitespace-only value against an empty one, all on one record; a fully-unchanged record with three empty columns (proves empty-vs-empty manufactures no difference); a Delete and an Add record, each carrying empty cells; a record identical except for a whitespace-only-vs-empty column (added 2026-08-23), isolating that one difference from the others for `-TreatWhitespaceAsEmpty`. Used by `-Mode Core`'s A6. |
+| `exclude-columns/` | Previous (`ID,Name,Dept,Stamp,OldOnly`) and Current (`ID,NewOnly,Name,Dept,Stamp`) differ by one column on each side, so the pair is a column mismatch unless both odd columns are excluded. ID=1 differs only in `Stamp` and the one-sided columns; ID=2 also changes `Name`; ID=3 is a Delete and ID=4 an Add. Previous's first and last columns hold values (`3`, `p3`) a wrong lookup for the Current-only column would surface on the Delete row. Used by `-Mode Core`'s C7. |
 
 Fixtures are committed rather than generated so they stop being re-derived, and because several
 encode findings that were not obvious. Add to them rather than replacing them.

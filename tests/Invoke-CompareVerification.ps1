@@ -45,8 +45,10 @@ Four modes:
                     terminators\ fixture (A7); a genuine change inside an embedded multi-line
                     quoted value being detected rather than silently absorbed, against the
                     newline-diff\ fixture (A8); a non-comma delimiter plumbing through correctly,
-                    against the delimiters\ fixture (A3); and empty/whitespace values in the core
-                    comparison and each shape's own output, against the empty-values\ fixture (A6).
+                    against the delimiters\ fixture (A3); empty/whitespace values in the core
+                    comparison and each shape's own output, against the empty-values\ fixture (A6);
+                    and CompareCSVs_Delta.ps1's -ExcludeFromComparison, against the
+                    exclude-columns\ fixture (C7).
 
 Every mode prints PASS/FAIL per check, ends with a RESULT line, and exits non-zero if any check
 failed.
@@ -717,6 +719,94 @@ elseif ($Mode -eq 'Core') {
         Assert-Check "C6 PS$($v[0]) other columns still triplet-shaped" $stillHasOtherTriplet
     }
 
+    }
+
+    # C7: Delta's -ExcludeFromComparison. An excluded column never decides whether a record changed
+    # but stays in the output, and may exist in either file or both. exclude-columns\ carries one of
+    # each: Stamp in both (and the only real difference on ID=1), OldOnly in Previous only, NewOnly
+    # in Current only - so without the parameter the pair is rejected as a column mismatch.
+    # The Delete row is the case this group exists for. NewOnly has no Previous value, and the two
+    # wrong ways to look one up both produce a plausible-looking value rather than an error: a
+    # hashtable miss stored into an [int[]] becomes 0 (Previous's ID), and a -1 index counts from the
+    # end (Previous's OldOnly). So the Delete line is asserted exactly, unquoted empty field included.
+    # A [string[]] does NOT cross a -File boundary as a list - "a,b" arrives as one string - so each
+    # case runs through a one-line driver, as C4/C5 do for their hashtables. The driver ends with
+    # exit $LASTEXITCODE, since the script's own exit 1 only ends the script, not the driver.
+    "=== C7: Delta -ExcludeFromComparison ==="
+    $exDir = Join-Path $FixtureFolder 'exclude-columns'
+    $exPrev = Join-Path $exDir 'prev.csv'; $exCurr = Join-Path $exDir 'curr.csv'
+    $deltaScript = Join-Path $ScriptFolder 'CompareCSVs_Delta.ps1'
+    if (-not (Test-Path $exPrev) -or -not (Test-Path $exCurr)) {
+        Assert-Check 'exclude-columns fixture present' $false "expected prev.csv/curr.csv under $exDir"
+    } else {
+        $c7DeleteLine = '"Delete","3",,"Cat","HR","2026-01-01"'
+        foreach ($v in @(@('7','pwsh'),@('51','powershell'))) {
+            $c7Run = {
+                param([string]$Label, [string]$Extra)
+                $out = Join-Path $work ("core_c7_{0}_{1}" -f $Label,$v[0])
+                Clear-Dir $out
+                $driver = Join-Path $work ("core_driver_c7_{0}_{1}.ps1" -f $Label,$v[0])
+                $body = "& '$deltaScript' -PreviousCSVFile '$exPrev' -CurrentCSVFile '$exCurr' -AnchorColumn ID -OutputFolder '$out' $Extra`r`nexit `$LASTEXITCODE"
+                [System.IO.File]::WriteAllText($driver, $body, [System.Text.Encoding]::ASCII)
+                $r = & $v[1] -NoProfile -File $driver *>&1
+                [pscustomobject]@{
+                    Exit   = $LASTEXITCODE
+                    # Joined/whitespace-collapsed - PS5.1 wraps a long message across output objects.
+                    Text   = ((($r | ForEach-Object { "$_" }) -join ' ') -replace '\s+', ' ').Trim()
+                    Files  = @(Get-ChildItem -Path $out -Filter '*.csv' -ErrorAction SilentlyContinue | Sort-Object Name)
+                }
+            }
+
+            $main = & $c7Run 'main' "-ExcludeFromComparison @('Stamp','OldOnly','NewOnly','Bogus')"
+            if ($main.Files.Count -ne 1) {
+                Assert-Check "C7 PS$($v[0]) report written" $false "exit=$($main.Exit) files=$($main.Files.Count) $($main.Text)"
+            } else {
+                $lines = [System.IO.File]::ReadAllLines($main.Files[0].FullName)
+                $rows = @($lines | Select-Object -Skip 1)
+                Assert-Check "C7 PS$($v[0]) header is Current's columns, NewOnly kept, OldOnly absent" `
+                    ($lines[0] -ceq '"ChangeType","ID","NewOnly","Name","Dept","Stamp"') "$($lines[0])"
+                Assert-Check "C7 PS$($v[0]) row count" ($rows.Count -eq 3) "expected 3 found $($rows.Count)"
+                $id1 = @($rows | Where-Object { $_ -match '^"[^"]*","1",' })
+                Assert-Check "C7 PS$($v[0]) ID=1 absent (differs only in excluded columns)" ($id1.Count -eq 0) "found $($id1 -join ' | ')"
+                Assert-Check "C7 PS$($v[0]) Update carries Current's excluded values" `
+                    ($rows -ccontains '"Update","2","n2","Bobby","IT","2026-02-01"') "$($rows -join ' | ')"
+                Assert-Check "C7 PS$($v[0]) Add carries Current's excluded values" `
+                    ($rows -ccontains '"Add","4","n4","Dan","Ops","2026-02-01"') "$($rows -join ' | ')"
+                Assert-Check "C7 PS$($v[0]) Delete carries Previous's Stamp, Current-only NewOnly empty" `
+                    ($rows -ccontains $c7DeleteLine) "$($rows -join ' | ')"
+                Assert-Check "C7 PS$($v[0]) neither-file name warns, naming only that name" `
+                    ($main.Text -match [regex]::Escape('found in neither file, nothing to exclude: bogus.')) "$($main.Text)"
+            }
+
+            # Control for ID=1: compare Stamp, and the same record becomes an Update.
+            $ctl = & $c7Run 'stamp' "-ExcludeFromComparison @('OldOnly','NewOnly')"
+            # @() around the whole if: an if statement's output unrolls, so a one-line result would
+            # otherwise arrive as a bare string and [0] would index its first character.
+            $ctlRows = @(if ($ctl.Files.Count -eq 1) { [System.IO.File]::ReadAllLines($ctl.Files[0].FullName) })
+            Assert-Check "C7 PS$($v[0]) control: Stamp compared, ID=1 Update" `
+                ($ctlRows -ccontains '"Update","1","n1","Ann","IT","2026-02-01"') "exit=$($ctl.Exit) $($ctlRows -join ' | ')"
+
+            $none = & $c7Run 'none' ''
+            Assert-Check "C7 PS$($v[0]) no parameter: rejected as column mismatch, no report" `
+                ($none.Exit -ne 0 -and $none.Text -match 'Column mismatch detected!' -and $none.Files.Count -eq 0) "exit=$($none.Exit) files=$($none.Files.Count)"
+
+            $anc = & $c7Run 'anchor' "-ExcludeFromComparison @('ID','OldOnly','NewOnly')"
+            Assert-Check "C7 PS$($v[0]) anchor excluded: rejected, no report" `
+                ($anc.Exit -ne 0 -and $anc.Text -match [regex]::Escape("Anchor column 'id' cannot be included in -ExcludeFromComparison parameter.") -and $anc.Files.Count -eq 0) "exit=$($anc.Exit) files=$($anc.Files.Count) $($anc.Text)"
+
+            # Every non-anchor column excluded is allowed: an Adds-and-Deletes-only feed.
+            $all = & $c7Run 'all' "-ExcludeFromComparison @('Name','Dept','Stamp','OldOnly','NewOnly')"
+            $allRows = @(if ($all.Files.Count -eq 1) { [System.IO.File]::ReadAllLines($all.Files[0].FullName) | Select-Object -Skip 1 })
+            Assert-Check "C7 PS$($v[0]) every non-anchor column excluded: only the Add and the Delete" `
+                ($allRows.Count -eq 2 -and $allRows -ccontains '"Add","4","n4","Dan","Ops","2026-02-01"' -and $allRows -ccontains $c7DeleteLine) "exit=$($all.Exit) $($allRows -join ' | ')"
+
+            # Split mode writes Deletes through its own writer - same row, no ChangeType column.
+            $spl = & $c7Run 'split' "-ExcludeFromComparison @('Stamp','OldOnly','NewOnly') -SeparateDeleteFile"
+            $delFile = @($spl.Files | Where-Object { $_.Name -like 'Delta_Deletes_*' })
+            $delRows = @(if ($delFile.Count -eq 1) { [System.IO.File]::ReadAllLines($delFile[0].FullName) | Select-Object -Skip 1 })
+            Assert-Check "C7 PS$($v[0]) split mode: delete file row matches, NewOnly empty" `
+                ($delRows.Count -eq 1 -and $delRows[0] -ceq '"3",,"Cat","HR","2026-01-01"') "exit=$($spl.Exit) files=$($spl.Files.Count) $($delRows -join ' | ')"
+        }
     }
 
     # E1/E2: a path decorated with wildcard metacharacters (E1) or non-ASCII characters

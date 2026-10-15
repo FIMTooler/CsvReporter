@@ -19,6 +19,8 @@ value, not by their formatted text, so a difference only in quoting style never 
 - Value comparison is exact by default, so a whitespace-only value differs from an empty one;
   -TreatWhitespaceAsEmpty makes the two compare equal. This script has no per-column view, so a
   record whose only difference is exactly that is not written at all when the switch is on.
+- -ExcludeFromComparison names columns that never decide whether a record changed, but still travel
+  in the output: an Add or Update row carries Current's value for them, a Delete row Previous's.
 - Output columns are every column of Current, in Current's physical order. The anchor is an
   ordinary column in its natural position - not hoisted to the front and not duplicated. A
   ChangeType column, naming Add/Update/Delete, is prepended unless -SeparateDeleteFile is used.
@@ -94,6 +96,30 @@ comparison runs. This script emits the whole record rather than per-column detai
 only difference is exactly this is counted as unchanged and never written - the same as any other
 record with no differences. Does not reach the anchor column, which must already be non-blank on
 both sides regardless of this switch.
+
+.PARAMETER ExcludeFromComparison
+Column names that never decide whether a record changed. An excluded column is NOT removed from the
+output: it stays in its place among Current's columns. An Add or Update row carries Current's value
+for it and a Delete row carries Previous's, the same as every other column. A record whose only
+differences are in excluded columns is unchanged and never written, so a new value in an excluded
+column reaches the output only on a row written because some other column changed.
+
+Names are normalized (trimmed and lowercase) like every other column reference, so header names can
+be pasted straight from the CSV.
+
+A name need exist in only ONE of the two files. Because the exclusion is applied before the
+column-set mismatch check, -ExcludeFromComparison also reconciles a column that exists in only one
+file - in either direction. Without it, that difference is rejected as a column mismatch. A
+Current-only excluded column is written empty on a Delete row, since Previous has no value for it. A
+Previous-only excluded column appears nowhere in the output, since output columns are always
+Current's.
+
+A name found in NEITHER file is a warning, not an error: nothing matched, so nothing was excluded.
+This lets one list be reused across file pairs that do not all carry every column. The warning names
+the unmatched columns and lists both header sets, so a typo stays visible.
+
+The anchor column cannot be excluded. Excluding every non-anchor column is allowed: every record
+present in both files is then unchanged, so the output holds only Adds and Deletes.
 
 .PARAMETER NormalizeHeaderNames
 Opt in to trimmed, lowercased output header names, matching the trim+lowercase treatment the rest of
@@ -181,6 +207,7 @@ Param(
     [switch]$CaseSensitive,
     [switch]$RejectDuplicateAnchors,
     [switch]$TreatWhitespaceAsEmpty,
+    [string[]]$ExcludeFromComparison = @(),
     [switch]$NormalizeHeaderNames,
     [switch]$AnchorOnlyDeletes,
     [switch]$Force,
@@ -313,7 +340,7 @@ try {
     # Format one record as a CSV line. Every field is quoted (matching Windows PowerShell 5.1's
     # Export-Csv), so escaping reduces to doubling embedded quotes. A $null field is written as an
     # empty *unquoted* field - the only place that renders is a Delete row's blanked-out columns
-    # under -AnchorOnlyDeletes.
+    # under -AnchorOnlyDeletes, or its Current-only -ExcludeFromComparison column.
     function ConvertTo-CsvLine {
         # Not Mandatory: a missing value would make PowerShell prompt, which hangs an unattended run.
         # [object[]], not [string[]]: a string[] parameter coerces an assigned $null to "".
@@ -429,12 +456,43 @@ try {
         }
         throw "Duplicate column names after normalization in Current CSV: $($details -join '; ')"
     }
+    # Normalize ExcludeFromComparison parameter (trim, lowercase)
+    $normalizedExcludeColumns = @()
+    if ($ExcludeFromComparison -and $ExcludeFromComparison.Count -gt 0) {
+        $normalizedExcludeColumns = @($ExcludeFromComparison | ForEach-Object { $_.Trim().ToLowerInvariant() })
+    }
     # Resolve anchor column name (normalized) early for validation
     $anchorNorm = $AnchorColumn.Trim().ToLowerInvariant()
 
     # Normalized header sets (sorted) for cross-file comparison
     $previousHeadersNorm = $prevNormAll | Sort-Object -ErrorAction Stop
     $currentHeadersNorm  = $currNormAll | Sort-Object -ErrorAction Stop
+
+    # Validate ExcludeFromComparison and filter it out of the column-set check only. Every column
+    # stays in the per-file index maps and the output; only the comparison loop below skips these.
+    # A column named here is simply not compared, so it need only exist in ONE of the two files, and
+    # the filter below removes it from whichever side carries it.
+    # A name matching NEITHER file warns rather than failing, so one list can be reused across file
+    # pairs that do not all carry every column. The warning is what keeps a typo visible.
+    # No "only the anchor would remain" rejection: with every non-anchor column excluded, each record
+    # present in both files is unchanged, which leaves an Adds-and-Deletes-only feed - a valid result
+    # for a script whose output is whole records.
+    if ($normalizedExcludeColumns.Count -gt 0) {
+        $unmatchedExclude = [System.Collections.Generic.List[string]]::new()
+        foreach ($excludeCol in $normalizedExcludeColumns) {
+            if ($excludeCol -eq $anchorNorm) {
+                throw "Anchor column '$anchorNorm' cannot be included in -ExcludeFromComparison parameter."
+            }
+            if ($excludeCol -notin $previousHeadersNorm -and $excludeCol -notin $currentHeadersNorm) {
+                $unmatchedExclude.Add($excludeCol)
+            }
+        }
+        if ($unmatchedExclude.Count -gt 0) {
+            Write-Host "WARNING: Column(s) in -ExcludeFromComparison found in neither file, nothing to exclude: $($unmatchedExclude -join ', '). Previous columns: $($previousHeadersRaw -join ', '). Current columns: $($currentHeadersRaw -join ', ')" -ForegroundColor Yellow
+        }
+        $previousHeadersNorm = @($previousHeadersNorm | Where-Object { $_ -notin $normalizedExcludeColumns })
+        $currentHeadersNorm = @($currentHeadersNorm | Where-Object { $_ -notin $normalizedExcludeColumns })
+    }
 
     # The inner parentheses are required. Without them PowerShell parses the condition as
     # (($previousHeadersNorm -join ',') -eq $currentHeadersNorm) -join ',' which evaluates to the
@@ -502,16 +560,21 @@ try {
     # ordinal maps above. Used unconditionally by the delete path below - no fast path for the common
     # case where both files already share a column order, since that is an extra branch for no
     # measured gain.
+    # -1 marks a Current column Previous does not have - only possible for a Current-only column
+    # named in -ExcludeFromComparison. Never store the hashtable miss directly: a $null assigned into
+    # an [int[]] becomes 0, which would silently fill that column with Previous's first column.
     $prevToOutputMap = [int[]]::new($outputHeaderFields.Count)
     for ($i = 0; $i -lt $currentHeadersRaw.Count; $i++) {
         $norm = $currentHeadersRaw[$i].Trim().ToLowerInvariant()
-        $prevToOutputMap[$i] = $prevHeaderIdx[$norm]
+        $prevToOutputMap[$i] = if ($prevHeaderIdx.ContainsKey($norm)) { $prevHeaderIdx[$norm] } else { -1 }
     }
 
     # Non-anchor normalized column names, walked on every Update/None comparison. The anchor is never
     # compared - two rows only pair up because their anchors already compared equal under the same
-    # rule this loop uses, so that comparison could never show a difference.
-    $compareColumnsNorm = @($currNormAll | Where-Object { $_ -ne $anchorNorm })
+    # rule this loop uses, so that comparison could never show a difference. Columns named in
+    # -ExcludeFromComparison are left out too, which also keeps a Current-only one from being looked
+    # up in a Previous row that does not have it.
+    $compareColumnsNorm = @($currNormAll | Where-Object { $_ -ne $anchorNorm -and $_ -notin $normalizedExcludeColumns })
 
     # Pending-name-then-rename: rows are written here as they're produced. Unlike the rest of the
     # family, this script always renames - see "always writes a file" in the header comment above.
@@ -709,8 +772,10 @@ try {
             }
             else
             {
+                # A -1 entry is left $null, written as an empty field. Indexing with it instead would
+                # return Previous's LAST column, since a negative index counts from the end.
                 for ($i = 0; $i -lt $outputHeaderFields.Count; $i++) {
-                    $outRow[$i + $changeTypeOffset] = $prevRow[$prevToOutputMap[$i]]
+                    if ($prevToOutputMap[$i] -ge 0) { $outRow[$i + $changeTypeOffset] = $prevRow[$prevToOutputMap[$i]] }
                 }
             }
             $deleteTargetWriter.WriteLine((ConvertTo-CsvLine -Fields $outRow -Delimiter $Delimiter))
